@@ -1,0 +1,76 @@
+import { z } from "zod";
+
+export const isoDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+
+export const articleComparisonSchema = z.object({
+  articleId: z.string(),
+  title: z.string(),
+  domain: z.string(),
+  publishedAt: z.string(),
+  sentiment: z.number(),
+  subjectivity: z.number(),
+  biasSignals: z.array(z.string()),
+  sharedKeywords: z.array(z.string()),
+});
+
+export const storyListItemSchema = z.object({
+  id: z.string(),
+  date: isoDateSchema,
+  title: z.string(),
+  region: z.string().nullable(),
+  category: z.string().nullable(),
+  articleCount: z.number().int(),
+  sourceCount: z.number().int(),
+  topDomains: z.array(z.string()),
+  keywords: z.array(z.string()),
+});
+
+export const storyDetailSchema = storyListItemSchema.extend({
+  articles: z.array(
+    z.object({
+      id: z.string(),
+      title: z.string(),
+      url: z.string().url(),
+      domain: z.string(),
+      syndicatedDomains: z.array(z.string()),
+      sourceName: z.string(),
+      publishedAt: z.string(),
+      summary: z.string().nullable(),
+      keywords: z.array(z.string()),
+      sentiment: z.number(),
+      subjectivity: z.number(),
+      biasSignals: z.array(z.string()),
+    }),
+  ),
+});
+
+export const storyComparisonSchema = z.object({
+  storyId: z.string(),
+  date: isoDateSchema,
+  title: z.string(),
+  sharedKeywords: z.array(z.string()),
+  commonEntities: z.array(z.string()),
+  domainSpread: z.array(z.string()),
+  framingSummary: z.array(z.string()),
+  articleComparisons: z.array(articleComparisonSchema),
+});
+
+export const sourceProfileSchema = z.object({
+  domain: z.string(),
+  sourceName: z.string(),
+  articleCount: z.number().int(),
+  averageSentiment: z.number(),
+  commonBiasSignals: z.array(z.string()),
+});
+
+export const storyFacetSchema = z.object({
+  date: isoDateSchema,
+  regions: z.array(z.string()),
+  categories: z.array(z.string()),
+});
+
+export type StoryListItem = z.infer<typeof storyListItemSchema>;
+export type StoryDetail = z.infer<typeof storyDetailSchema>;
+export type StoryComparison = z.infer<typeof storyComparisonSchema>;
+export type SourceProfileDto = z.infer<typeof sourceProfileSchema>;
+export type StoryFacetDto = z.infer<typeof storyFacetSchema>;

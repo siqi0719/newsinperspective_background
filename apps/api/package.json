@@ -1,0 +1,31 @@
+{
+  "name": "@news/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/index.ts",
+    "ingest": "tsx src/scripts/ingest.ts",
+    "status": "tsx src/scripts/status.ts",
+    "start": "node dist/src/index.js",
+    "test": "vitest run",
+    "lint": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.1.0",
+    "@news/db": "workspace:*",
+    "@news/shared": "workspace:*",
+    "@prisma/client": "^6.5.0",
+    "dotenv": "^16.4.7",
+    "fastify": "^5.2.1",
+    "rss-parser": "^3.13.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2",
+    "vitest": "^3.0.8"
+  }
+}

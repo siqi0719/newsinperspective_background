@@ -1,0 +1,23 @@
+{
+  "name": "news-in-perspective",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@10.32.1",
+  "scripts": {
+    "api:start": "pnpm --filter @news/api start",
+    "build": "turbo run build",
+    "dev": "turbo run dev --parallel",
+    "ingest": "pnpm --filter @news/api ingest",
+    "data:status": "pnpm --filter @news/api status",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "db:generate": "pnpm --filter @news/db db:generate",
+    "db:migrate": "pnpm --filter @news/db db:migrate",
+    "db:deploy": "pnpm --filter @news/db db:deploy",
+    "web:start": "pnpm --filter @news/web dev -- --host 0.0.0.0"
+  },
+  "devDependencies": {
+    "turbo": "^2.5.6",
+    "typescript": "^5.8.2"
+  }
+}

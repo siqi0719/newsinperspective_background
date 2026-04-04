@@ -1,0 +1,10 @@
+node_modules
+.turbo
+dist
+.env
+.env.local
+coverage
+apps/api/data
+logs
+notebooks/.venv
+notebooks/exports
