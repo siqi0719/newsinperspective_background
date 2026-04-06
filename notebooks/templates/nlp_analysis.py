@@ -18,9 +18,15 @@
 #
 # Shared notebook template for team analysis on exported app data.
 #
-# Before running:
-# 1. Start the backend and export a date slice with `python notebooks/src/export_news_slice.py --date YYYY-MM-DD`
-# 2. Set `EXPORT_DIR` below to the generated directory
+# Example notebook:
+# 1. Consolidate saved exports with `pnpm export:kagi:notebook`
+# 2. Sync the workspace to `MyDrive/NewsInPerspective`
+# 3. Open `notebooks/nlp_analysis.ipynb` in Colab or run this template locally
+#
+# Colab path requirement:
+# - This notebook expects the shared folder at `MyDrive/NewsInPerspective`
+# - If your Drive path differs, update `WORKSPACE_DIR` in the setup cell below
+# - This notebook expects `news.jsonl` next to the notebook file
 
 # %%
 from __future__ import annotations
@@ -34,70 +40,120 @@ from IPython.display import display
 from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
 
 # %%
-EXPORT_DIR = Path("notebooks/exports/2026-04-04")
+# Mount Google Drive in Colab and point the notebook at the shared folder.
+from google.colab import drive  # type: ignore
+
+drive.mount("/content/drive")
+
+WORKSPACE_DIR = Path("/content/drive/MyDrive/NewsInPerspective")
+
+NEWS_FILE = WORKSPACE_DIR / "news.jsonl"
 
 # %%
-metadata = json.loads((EXPORT_DIR / "metadata.json").read_text(encoding="utf-8"))
-stories_df = pd.read_json(EXPORT_DIR / "stories.jsonl", lines=True)
-articles_df = pd.read_json(EXPORT_DIR / "articles.jsonl", lines=True)
-comparisons_df = pd.read_json(EXPORT_DIR / "comparisons.jsonl", lines=True)
+# Load the single denormalized export file used throughout the notebook.
+news_df = pd.read_json(NEWS_FILE, lines=True)
+news_df["full_text"] = news_df["full_text"].fillna("")
+news_df["analysis_text"] = news_df["analysis_text"].fillna("").str.strip()
+news_df["published_at"] = pd.to_datetime(news_df["published_at"], errors="coerce")
 
-articles_df["summary"] = articles_df["summary"].fillna("")
-articles_df["analysis_text"] = articles_df["analysis_text"].fillna("").str.strip()
-articles_df["published_at"] = pd.to_datetime(articles_df["published_at"], errors="coerce")
+# Backfill optional columns so older exports do not crash the example notebook.
+for column in ["category", "region", "date"]:
+    if column not in news_df.columns:
+        news_df[column] = None
 
-print(metadata)
-print(f"stories: {len(stories_df)}")
-print(f"articles: {len(articles_df)}")
-print(f"comparisons: {len(comparisons_df)}")
+print(f"articles: {len(news_df)}")
+print(f"articles with full text: {int(news_df['full_text_available'].sum())}")
 
 # %% [markdown]
-# ## Quick slice overview
+# ## Cluster View
+# Example: derive one cluster-level table from the article-level export.
 
 # %%
-articles_df[["story_title", "domain", "sentiment", "subjectivity"]].head(10)
+# Convert the exported date column into a real datetime before aggregation.
+news_df["date"] = pd.to_datetime(news_df["date"], errors="coerce")
+
+
+def first_non_null(series: pd.Series):
+    """Return the first non-null value in a series, if one exists."""
+    non_null = series.dropna()
+    return non_null.iloc[0] if not non_null.empty else None
+
+
+# Build one row per cluster and derive the time window from the article dates.
+clusters_df = (
+    news_df.groupby("cluster_id", dropna=False)
+    .agg(
+        cluster_title=("cluster_title", "first"),
+        cluster_source_count=("cluster_source_count", "max"),
+        cluster_article_count=("cluster_article_count", "max"),
+        category=("category", first_non_null),
+        region=("region", first_non_null),
+        date_from=("date", "min"),
+        date_until=("date", "max"),
+    )
+    .reset_index()
+)
+
+print(f"clusters: {clusters_df['cluster_id'].nunique()}")
+
+# %% [markdown]
+# ## Example: quick overview
 
 # %%
-articles_df.groupby("domain").agg(
-    article_count=("article_id", "count"),
-    mean_sentiment=("sentiment", "mean"),
-    mean_subjectivity=("subjectivity", "mean"),
+clusters_df.sort_values(["cluster_source_count", "cluster_article_count"], ascending=False).head(10)
+
+# %%
+# Example: compare domain coverage and extracted-text volume.
+news_df.groupby("domain").agg(
+    article_count=("url", "count"),
+    full_text_articles=("full_text_available", "sum"),
+    mean_full_text_length=("full_text_length", "mean"),
 ).sort_values("article_count", ascending=False).head(15)
 
 # %%
-articles_df.groupby("category").agg(
-    article_count=("article_id", "count"),
-    mean_sentiment=("sentiment", "mean"),
-).sort_values("article_count", ascending=False)
+# Example: inspect how much of the corpus has extracted full text.
+news_df["full_text_available"].value_counts(dropna=False)
 
 # %% [markdown]
-# ## Sample sentiment analysis
-#
-# This uses the app's exported sentiment score as the baseline signal.
+# ## Example: extraction quality
 
 # %%
-sentiment_by_domain = (
-    articles_df.groupby("domain")
-    .agg(article_count=("article_id", "count"), mean_sentiment=("sentiment", "mean"))
-    .query("article_count >= 3")
-    .sort_values("mean_sentiment")
+# Example: group by extraction result to see where scraping worked or failed.
+quality_df = (
+    news_df.groupby("extraction_status")
+    .agg(article_count=("url", "count"), mean_text_length=("full_text_length", "mean"))
+    .sort_values("article_count", ascending=False)
 )
 
-sentiment_by_domain.tail(15).plot(
-    kind="barh",
-    y="mean_sentiment",
-    figsize=(10, 7),
-    legend=False,
-    title="Average sentiment by domain",
-)
-plt.xlabel("Mean sentiment")
+display(quality_df)
+quality_df["article_count"].plot(kind="bar", title="Extraction status distribution")
+plt.ylabel("Articles")
 plt.tight_layout()
 
 # %% [markdown]
-# ## Bi-gram analysis
+# ## Example: failed extraction URLs
+# These are example source URLs where browser-based extraction failed, so teammates can inspect them manually.
 
 # %%
-corpus = articles_df["analysis_text"].loc[articles_df["analysis_text"].str.len() > 0]
+failed_examples_df = (
+    news_df.loc[
+        news_df["extraction_status"] == "FAILED",
+        ["domain", "original_url", "final_url", "url", "extraction_error"],
+    ]
+    .drop_duplicates()
+    .head(15)
+    .reset_index(drop=True)
+)
+
+print(f"failed extraction examples: {len(failed_examples_df)}")
+display(failed_examples_df)
+
+# %% [markdown]
+# ## Example: bi-gram analysis
+
+# %%
+# Build a text corpus from the denormalized analysis text column.
+corpus = news_df["analysis_text"].loc[news_df["analysis_text"].str.len() > 0]
 
 bigram_vectorizer = CountVectorizer(
     stop_words="english",
@@ -120,8 +176,7 @@ bigram_counts = (
 bigram_counts.head(25)
 
 # %% [markdown]
-# ## TF-IDF terms
-#
+# ## Example: TF-IDF terms
 # This highlights terms that are distinctive in the current slice.
 
 # %%
@@ -148,35 +203,43 @@ tfidf_df = (
 tfidf_df.head(30)
 
 # %% [markdown]
-# ## Per-domain distinctive terms
+# ## Example: per-domain distinctive terms
 
 # %%
-top_domains = articles_df["domain"].value_counts().head(5).index.tolist()
+# Look at the most frequent domains in the export first.
+top_domains = news_df["domain"].value_counts().head(5).index.tolist()
+print("Top domains:", top_domains)
 
 for domain in top_domains:
-    domain_text = articles_df.loc[articles_df["domain"] == domain, "analysis_text"]
+    # Restrict to one domain and drop empty rows before vectorization.
+    domain_text = news_df.loc[news_df["domain"] == domain, "analysis_text"]
     domain_text = domain_text.loc[domain_text.str.len() > 0]
-    if len(domain_text) < 2:
+    if len(domain_text) == 0:
+        print(f"\nSkipping {domain}: no analysis_text rows")
         continue
 
-    domain_vectorizer = TfidfVectorizer(
-        stop_words="english",
-        ngram_range=(1, 2),
-        min_df=1,
-        max_df=0.9,
-    )
-    domain_matrix = domain_vectorizer.fit_transform(domain_text)
-    domain_scores = domain_matrix.mean(axis=0).A1
-    domain_terms = (
-        pd.DataFrame(
-            {
-                "term": domain_vectorizer.get_feature_names_out(),
-                "score": domain_scores,
-            }
+    try:
+        domain_vectorizer = TfidfVectorizer(
+            stop_words="english",
+            ngram_range=(1, 2),
+            min_df=1,
+            max_df=1.0,
         )
-        .sort_values("score", ascending=False)
-        .head(10)
-    )
+        domain_matrix = domain_vectorizer.fit_transform(domain_text)
+        domain_scores = domain_matrix.mean(axis=0).A1
+        domain_terms = (
+            pd.DataFrame(
+                {
+                    "term": domain_vectorizer.get_feature_names_out(),
+                    "score": domain_scores,
+                }
+            )
+            .sort_values("score", ascending=False)
+            .head(10)
+        )
+    except ValueError as error:
+        print(f"\nSkipping {domain}: {error}")
+        continue
 
     print(f"\nTop TF-IDF terms for {domain}")
     display(domain_terms)

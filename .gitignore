@@ -1,10 +1,33 @@
-node_modules
-.turbo
-dist
+# Dependencies
+node_modules/
+
+# Build and test output
+.turbo/
+dist/
+coverage/
+.vite/
+
+# App/package-local caches
+.cache/
+
+# Environment and local secrets
 .env
-.env.local
-coverage
-apps/api/data
-logs
-notebooks/.venv
-notebooks/exports
+.env.*
+!.env.example
+.drive-sync.env
+!.drive-sync.env.example
+
+# Runtime data and logs
+logs/
+apps/api/data/
+apps/api/notebooks/
+
+# Python and notebook artifacts
+.venv/
+notebooks/.venv/
+notebooks/exports/
+__pycache__/
+*.py[cod]
+
+# OS/editor noise
+.DS_Store

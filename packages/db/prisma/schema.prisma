@@ -19,6 +19,12 @@ enum ScopeType {
   CLUSTER
 }
 
+enum ExtractionStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
 model FeedSource {
   id          String      @id @default(cuid())
   url         String      @unique
@@ -74,6 +80,11 @@ model Article {
   title           String
   summary         String?
   contentSnippet  String?
+  fullText        String?
+  fullTextFormat  String?
+  extractionStatus ExtractionStatus @default(PENDING)
+  extractedAt     DateTime?
+  extractionError String?
   publishedAt     DateTime?
   sourceName      String
   domain          String

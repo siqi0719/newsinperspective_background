@@ -6,24 +6,36 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx watch src/index.ts",
+    "enrich:status": "tsx src/scripts/enrich-status.ts",
+    "enrich:text": "tsx src/scripts/enrich-text.ts",
     "ingest": "tsx src/scripts/ingest.ts",
+    "kagi:export-clusters": "tsx src/scripts/kagi-export-clusters.ts",
+    "kagi:backfill-redirects": "tsx src/scripts/kagi-backfill-redirects.ts",
+    "kagi:repair-failures": "tsx src/scripts/kagi-repair-failures.ts",
+    "kagi:random-cluster": "tsx src/scripts/kagi-random-cluster.ts",
+    "kagi:top-clusters": "tsx src/scripts/kagi-top-clusters.ts",
     "status": "tsx src/scripts/status.ts",
     "start": "node dist/src/index.js",
     "test": "vitest run",
-    "lint": "tsc -p tsconfig.json --noEmit"
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "verify:text-enrichment": "tsx src/scripts/verify-text-enrichment.ts"
   },
   "dependencies": {
+    "@mozilla/readability": "^0.6.0",
     "@fastify/cors": "^11.1.0",
     "@news/db": "workspace:*",
     "@news/shared": "workspace:*",
     "@prisma/client": "^6.5.0",
     "dotenv": "^16.4.7",
     "fastify": "^5.2.1",
+    "jsdom": "^26.1.0",
+    "playwright": "^1.54.2",
     "rss-parser": "^3.13.0",
     "zod": "^3.24.2"
   },
   "devDependencies": {
     "@types/node": "^22.13.10",
+    "@types/jsdom": "^21.1.7",
     "tsx": "^4.19.3",
     "typescript": "^5.8.2",
     "vitest": "^3.0.8"

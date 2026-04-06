@@ -12,7 +12,7 @@ Monorepo for a news-comparison project that ingests RSS feeds from Kagi's public
 1. Select the repo Node version: `nvm use`
 2. Enable Corepack and install the pinned package manager: `corepack enable && corepack install`
 3. Install dependencies: `pnpm install`
-4. Start Postgres: `docker compose up -d postgres`
+4. Start Postgres: `pnpm db:start`
 5. Generate Prisma client: `pnpm db:generate`
 6. Run migrations: `pnpm db:migrate`
 7. Start the backend: `pnpm api:start`
@@ -37,6 +37,26 @@ Or run ingestion directly from the CLI:
 
 ```bash
 pnpm ingest 2026-03-23
+```
+
+Enrich publisher article text for notebook analysis:
+
+```bash
+pnpm enrich:text 2026-03-23 100
+```
+
+This fetches publisher pages for up to `100` articles on that date, extracts readable body text where possible, and stores it on the article record for export.
+
+Inspect text-enrichment status:
+
+```bash
+pnpm enrich:status 2026-03-23
+```
+
+Run a small verification sample:
+
+```bash
+pnpm verify:text-enrichment 2026-03-23 3
 ```
 
 Inspect dataset status:
@@ -66,18 +86,20 @@ Then inspect:
 
 For team NLP analysis in Jupyter, use the shared notebook workspace under `notebooks/`.
 
-1. Create a Python virtualenv: `python3 -m venv .venv && source .venv/bin/activate`
-2. Install notebook dependencies: `pip install -r notebooks/requirements.txt`
+1. Create the Python environment with `uv venv`
+2. Activate it with `source .venv/bin/activate`
+3. Install notebook tooling with `uv sync && uv pip install -r notebooks/requirements.txt`
 3. Export a date slice from the running API:
 
 ```bash
-python notebooks/src/export_news_slice.py \
+pnpm export:notebook -- \
   --date 2026-03-23 \
   --api-base http://localhost:4400 \
   --output-dir notebooks/exports/2026-03-23
 ```
 
-4. Convert the Jupytext template if needed: `jupytext --to ipynb notebooks/templates/nlp_analysis.py`
+4. Convert the Jupytext template if needed: `source .venv/bin/activate && jupytext --to ipynb notebooks/templates/nlp_analysis.py`
 5. Open the notebook and point `EXPORT_DIR` at the exported slice.
 
 The exporter writes flat JSONL files that load directly into pandas dataframes and work well for shared notebook analysis.
+Activate `.venv` before running notebook or Drive-sync commands, since `pnpm drive:push` rebuilds the shared `.ipynb`.

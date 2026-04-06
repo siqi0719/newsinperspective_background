@@ -1,6 +1,7 @@
 import { FastifyInstance } from "fastify";
 import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
+import { enrichArticleText } from "../services/article-text.js";
 import { runIngestion } from "../services/ingestion.js";
 
 export async function registerInternalRoutes(app: FastifyInstance): Promise<void> {
@@ -31,5 +32,16 @@ export async function registerInternalRoutes(app: FastifyInstance): Promise<void
     }
 
     return run;
+  });
+
+  app.post("/internal/articles/enrich", async (request) => {
+    const bodySchema = z.object({
+      date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      limit: z.number().int().positive().max(1000).optional(),
+      force: z.boolean().optional(),
+    });
+
+    const body = bodySchema.parse(request.body ?? {});
+    return enrichArticleText(body);
   });
 }

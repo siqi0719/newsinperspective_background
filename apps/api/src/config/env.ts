@@ -29,6 +29,11 @@ const envSchema = z.object({
     .transform((value) => value === "true"),
   AUTO_INGEST_TIME_UTC: z.string().default("12:30"),
   RSS_FETCH_TIMEOUT_MS: z.coerce.number().default(10000),
+  ARTICLE_FETCH_TIMEOUT_MS: z.coerce.number().default(15000),
+  ARTICLE_FETCH_USER_AGENT: z
+    .string()
+    .default("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"),
+  ARTICLE_BROWSER_TIMEOUT_MS: z.coerce.number().default(30000),
   INGEST_FEED_LIMIT: z.coerce.number().optional(),
 });
 
