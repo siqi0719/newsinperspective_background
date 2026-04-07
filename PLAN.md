@@ -1,18 +1,24 @@
-# NewsInPerspective v1
+# NewsInPerspective
 
-## Summary
-Build a `pnpm` + `turbo` monorepo with a Svelte + Vite frontend and a Node/TypeScript backend using Prisma + Postgres.
+NewsInPerspective is a university research project in Natural Language Processing (NLP). The goal of the project is to build
+a web application which can show different perspectives on news stories. 
 
-The first implementation milestone is backend-first and focuses on collecting daily data reliably:
+## Milestone 1: Ingestion, clustering and basic display
 
-- fetch the Kagi feed catalog from `https://kite.kagi.com/kite.json` or its current equivalent
-- ingest article-level RSS entries from those feeds
-- normalize and deduplicate articles
-- cluster same-story coverage per day
-- compute lightweight NLP signals for cross-source similarity and framing analysis
-- expose read APIs for the frontend to render daily stories and per-story comparisons
+Goal: Build a `pnpm` + `turbo` monorepo with a Svelte + Vite frontend and a Node/TypeScript backend using Prisma + Postgres with the following capabilities:
+
+- fetch the Kagi feed catalog from `https://kite.kagi.com/kite.json`
+- Use Kagi clusters to group articles into stories
+- Use source URLs to retrieve raw article text
+- Normalize and deduplicate articles
+- Command line-based ingestion runner
+- Frontend can show today's 10 top news clusters.
+- Infinite scroll: When reaching the bottom, the next day's top clusters are loaded and shown.
+- Exporting of ingested clusters to a JSON file for student experimation in Jupyter notebooks (template provided and uploaded to Google Drive).
+- Frontend looks visually appealing and is responsive.
 
 ## Architecture
+
 ### Monorepo
 - `apps/web`: Svelte + Vite frontend
 - `apps/api`: backend API and ingestion jobs
