@@ -7,6 +7,11 @@ import { ExtractionStatus, Prisma, ScopeType } from "@prisma/client";
 import "../config/env.js";
 import { prisma } from "../lib/prisma.js";
 import { buildArticleFeatures, buildClusterKeywordsWithOpenRouter } from "../services/nlp.js";
+import {
+  buildSoftDedupePlan,
+  DedupeDocumentInput,
+  resolveDedupeStrategy,
+} from "../services/dedupe.js";
 
 interface ExportedClusterSource {
   title: string;
@@ -54,6 +59,11 @@ function parseDate(value: string | undefined, fallback: Date): Date {
   if (!value) return fallback;
   const parsed = new Date(value);
   return Number.isNaN(parsed.getTime()) ? fallback : parsed;
+}
+
+function parseUnitFloat(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : fallback;
 }
 
 function normalizeExtractionStatus(value: string | undefined): ExtractionStatus {
@@ -213,7 +223,8 @@ async function main() {
     });
 
     const articleIds: string[] = [];
-    const localKeywords: string[] = [];
+    const dedupeInputs: DedupeDocumentInput[] = [];
+    const duplicateDomainsByArticleId = new Map<string, string[]>();
 
     for (const source of payload.sources) {
       const originalUrl = source.originalUrl ?? source.link;
@@ -264,6 +275,15 @@ async function main() {
       });
 
       articleIds.push(article.id);
+      duplicateDomainsByArticleId.set(article.id, article.duplicateDomains);
+      dedupeInputs.push({
+        id: article.id,
+        domain: source.domain,
+        title: source.title,
+        summary: null,
+        body: source.fullText ?? buildAnalysisText(source),
+        language: article.language,
+      });
 
       const featureSet = buildArticleFeatures(
         source.title,
@@ -271,7 +291,6 @@ async function main() {
         source.fullText ? null : buildAnalysisText(source),
         null,
       );
-      localKeywords.push(...featureSet.keywords);
 
       await prisma.nlpFeature.upsert({
         where: {
@@ -319,6 +338,29 @@ async function main() {
       },
     });
 
+    const dedupePlan = buildSoftDedupePlan(dedupeInputs, {
+      strategy: resolveDedupeStrategy(process.env.KAGI_DEDUPE_STRATEGY),
+      mirrorDomainsOnAllMembers: true,
+      simHashMinJaccardSimilarity: parseUnitFloat(process.env.KAGI_DEDUPE_SIMHASH_MIN_JACCARD, 0.9),
+    });
+    for (const update of dedupePlan.updates) {
+      if (update.duplicateDomains.length === 0) continue;
+      const existingDomains = duplicateDomainsByArticleId.get(update.id) ?? [];
+      const mergedDomains = [...new Set([...existingDomains, ...update.duplicateDomains])].sort((a, b) =>
+        a.localeCompare(b),
+      );
+      await prisma.article.update({
+        where: { id: update.id },
+        data: {
+          duplicateDomains: mergedDomains,
+          duplicateCount: mergedDomains.length,
+        },
+      });
+    }
+    console.log(
+      `[kagi:import-clusters] dedupe strategy=${dedupePlan.strategy} groups=${dedupePlan.groupCount} matchedArticles=${dedupePlan.matchedArticleCount}`,
+    );
+
     const clusterKeywordResult = await buildClusterKeywordsWithOpenRouter(
       payload.chosenCluster.title,
       payload.sources.map((source) => ({
@@ -327,10 +369,14 @@ async function main() {
         body: source.fullText ?? null,
         language: null,
       })),
-      [...new Set(localKeywords)].slice(0, 8),
+      {
+        onAttemptLog: (message) => {
+          console.log(`[kagi:import-clusters][keywords] ${payload.chosenCluster.storyId} ${message}`);
+        },
+      },
     );
     console.log(
-      `[kagi:import-clusters] keywords source=${clusterKeywordResult.source} model=${clusterKeywordResult.model ?? "n/a"} error=${clusterKeywordResult.error ?? "none"}`,
+      `[kagi:import-clusters] keywords source=${clusterKeywordResult.source} status=${clusterKeywordResult.status} model=${clusterKeywordResult.model ?? "n/a"} error=${clusterKeywordResult.error ?? "none"}`,
     );
 
     const existingClusterFeature = await prisma.nlpFeature.findFirst({
@@ -348,8 +394,12 @@ async function main() {
           featureSet: toInputJson({
             keywords: clusterKeywordResult.keywords,
             keywordSource: clusterKeywordResult.source,
+            keywordStatus: clusterKeywordResult.status,
             keywordModel: clusterKeywordResult.model,
             keywordError: clusterKeywordResult.error,
+            dedupeStrategy: dedupePlan.strategy,
+            dedupeGroupCount: dedupePlan.groupCount,
+            dedupeMatchedArticleCount: dedupePlan.matchedArticleCount,
             kagiClusterNumber: payload.chosenCluster.clusterNumber ?? null,
           }),
         },
@@ -362,8 +412,12 @@ async function main() {
           featureSet: toInputJson({
             keywords: clusterKeywordResult.keywords,
             keywordSource: clusterKeywordResult.source,
+            keywordStatus: clusterKeywordResult.status,
             keywordModel: clusterKeywordResult.model,
             keywordError: clusterKeywordResult.error,
+            dedupeStrategy: dedupePlan.strategy,
+            dedupeGroupCount: dedupePlan.groupCount,
+            dedupeMatchedArticleCount: dedupePlan.matchedArticleCount,
             kagiClusterNumber: payload.chosenCluster.clusterNumber ?? null,
           }),
         },

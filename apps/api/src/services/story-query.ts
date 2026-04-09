@@ -325,19 +325,10 @@ export async function listStoriesByDate(
   const scoredRows = rows.map((row) => {
     const clusterDomains = [...new Set(row.articles.flatMap((item) => uniqueDomains(item.article)))];
     const topDomains = buildTopDomainsForDisplay(row.articles, 4);
-    const articleKeywords = row.articles
-      .flatMap((item) => item.article.features)
-      .flatMap((feature) => {
-        const payload = feature.featureSet as { keywords?: string[] };
-        return payload.keywords ?? [];
-      })
-      .filter((value, index, arr) => arr.indexOf(value) === index)
-      .slice(0, 8);
-    const clusterFeature = row.features[0]?.featureSet as { keywords?: string[]; kagiClusterNumber?: number } | undefined;
-    const keywords =
-      clusterFeature?.keywords && clusterFeature.keywords.length > 0
-        ? clusterFeature.keywords.slice(0, 8)
-        : articleKeywords;
+    const clusterFeature = row.features[0]?.featureSet as
+      | { keywords?: string[]; kagiClusterNumber?: number; keywordStatus?: string }
+      | undefined;
+    const keywords = clusterFeature?.keywords?.slice(0, 8) ?? [];
     const authorityStats = computeAuthorityStats(clusterDomains);
     const sourceProfileTrustScore = scoreSourceProfileTrust(clusterDomains, profileCountByDomain);
     const kagiClusterNumber =
@@ -449,7 +440,7 @@ export async function getStoryDetail(id: string): Promise<StoryDetail | null> {
     return left.article.title.localeCompare(right.article.title);
   });
 
-  const articles = sortedRows.map(({ article }) => {
+  const baseArticles = sortedRows.map(({ article }) => {
     const feature = article.features[0]?.featureSet as
       | { keywords?: string[]; sentiment?: number; subjectivity?: number; biasSignals?: string[] }
       | undefined;
@@ -476,13 +467,83 @@ export async function getStoryDetail(id: string): Promise<StoryDetail | null> {
       biasSignals: feature?.biasSignals ?? [],
     };
   });
+  const articlesByDomain = new Map<string, typeof baseArticles>();
+  for (const article of baseArticles) {
+    const key = article.domain.trim().toLowerCase();
+    const bucket = articlesByDomain.get(key) ?? [];
+    bucket.push(article);
+    articlesByDomain.set(key, bucket);
+  }
+  const articleById = new Map(baseArticles.map((article) => [article.id, article]));
+  const peerMapByArticleId = new Map<string, Map<string, {
+    articleId: string;
+    title: string;
+    domain: string;
+    url: string;
+  }>>();
+
+  function addPeer(
+    sourceId: string,
+    peer: { articleId: string; title: string; domain: string; url: string },
+  ): void {
+    if (sourceId === peer.articleId) return;
+    const bucket = peerMapByArticleId.get(sourceId) ?? new Map<string, {
+      articleId: string;
+      title: string;
+      domain: string;
+      url: string;
+    }>();
+    bucket.set(peer.articleId, peer);
+    peerMapByArticleId.set(sourceId, bucket);
+  }
+
+  for (const article of baseArticles) {
+    const domains = article.syndicatedDomains
+      .map((domain) => domain.trim().toLowerCase())
+      .filter(Boolean)
+      .filter((domain, index, list) => list.indexOf(domain) === index);
+
+    for (const domain of domains) {
+      const peer = (articlesByDomain.get(domain) ?? []).find((candidate) => candidate.id !== article.id);
+      if (!peer) continue;
+      addPeer(article.id, {
+        articleId: peer.id,
+        title: peer.title,
+        domain: peer.domain,
+        url: peer.url,
+      });
+    }
+  }
+
+  for (const [sourceId, peers] of peerMapByArticleId.entries()) {
+    const source = articleById.get(sourceId);
+    if (!source) continue;
+    for (const peer of peers.values()) {
+      addPeer(peer.articleId, {
+        articleId: source.id,
+        title: source.title,
+        domain: source.domain,
+        url: source.url,
+      });
+    }
+  }
+
+  const articles = baseArticles.map((article) => {
+    const nearDuplicatePeers = [...(peerMapByArticleId.get(article.id)?.values() ?? [])].sort((left, right) => {
+      const domainCompare = left.domain.localeCompare(right.domain);
+      if (domainCompare !== 0) return domainCompare;
+      return left.title.localeCompare(right.title);
+    });
+    return {
+      ...article,
+      nearDuplicatePeers,
+    };
+  });
   const { dateFrom, dateUntil } = getClusterDateRange(row.storyDate, row.articles);
-  const clusterFeature = row.features[0]?.featureSet as { keywords?: string[]; kagiClusterNumber?: number } | undefined;
-  const articleKeywords = [...new Set(articles.flatMap((article) => article.keywords))].slice(0, 8);
-  const detailKeywords =
-    clusterFeature?.keywords && clusterFeature.keywords.length > 0
-      ? clusterFeature.keywords.slice(0, 8)
-      : articleKeywords;
+  const clusterFeature = row.features[0]?.featureSet as
+    | { keywords?: string[]; kagiClusterNumber?: number; keywordStatus?: string }
+    | undefined;
+  const detailKeywords = clusterFeature?.keywords?.slice(0, 8) ?? [];
   const authorityStats = computeAuthorityStats(clusterDomains);
   const sourceProfileTrustScore = scoreSourceProfileTrust(clusterDomains, profileCountByDomain);
   const kagiClusterNumber =

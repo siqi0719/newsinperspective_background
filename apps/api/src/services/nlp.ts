@@ -2,8 +2,8 @@ import { ArticleFeatureSet } from "../domain/types.js";
 import {
   detectLanguageFromText,
   detectBiasSignals,
-  extractKeywords,
   extractEntities,
+  extractKeywords,
   scoreSentiment,
   scoreSubjectivity,
 } from "../domain/text.js";
@@ -37,7 +37,8 @@ interface ClusterKeywordArticle {
 
 interface ClusterKeywordResult {
   keywords: string[];
-  source: "openrouter" | "local";
+  source: "openrouter";
+  status: "ready" | "keywords_pending";
   model: string | null;
   error: string | null;
 }
@@ -57,45 +58,42 @@ function pickLanguage(values: Array<string | null | undefined>): string | null {
   return sorted[0]?.[0] ?? null;
 }
 
-function unique(values: string[]): string[] {
-  return [...new Set(values)];
-}
-
 export async function buildClusterKeywordsWithOpenRouter(
   clusterTitle: string,
   articles: ClusterKeywordArticle[],
-  fallbackKeywords: string[],
+  options?: {
+    maxKeywords?: number;
+    onAttemptLog?: (message: string) => void;
+  },
 ): Promise<ClusterKeywordResult> {
   const topArticles = articles.slice(0, 6);
   const language = pickLanguage(topArticles.map((article) => article.language));
   const summary = joinText(topArticles.map((article) => article.summary), 3000);
   const body = joinText(topArticles.map((article) => article.body), 6000);
-  const localKeywords = unique(
-    fallbackKeywords.length > 0
-      ? fallbackKeywords
-      : extractKeywords(language, clusterTitle, summary, body),
-  ).slice(0, 8);
 
   const openrouter = await extractKeywordsWithOpenRouter({
     title: clusterTitle,
     summary,
     body,
     language,
-    maxKeywords: 8,
+    maxKeywords: options?.maxKeywords ?? 8,
+    ...(options?.onAttemptLog ? { onAttemptLog: options.onAttemptLog } : {}),
   });
 
   if (!openrouter.error && openrouter.keywords.length > 0) {
     return {
       keywords: openrouter.keywords,
       source: "openrouter",
+      status: "ready",
       model: openrouter.model,
       error: null,
     };
   }
 
   return {
-    keywords: localKeywords,
-    source: "local",
+    keywords: [],
+    source: "openrouter",
+    status: "keywords_pending",
     model: openrouter.model,
     error: openrouter.error,
   };

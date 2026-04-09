@@ -10,6 +10,11 @@ import {
   listClustersForIngestion,
 } from "../services/kagi-news.js";
 import { buildArticleFeatures, buildClusterKeywordsWithOpenRouter } from "../services/nlp.js";
+import {
+  buildSoftDedupePlan,
+  DedupeDocumentInput,
+  resolveDedupeStrategy,
+} from "../services/dedupe.js";
 
 interface IngestedSource {
   title: string;
@@ -74,6 +79,11 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
 function parseNonNegativeInt(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : fallback;
+}
+
+function parseUnitFloat(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 1 ? parsed : fallback;
 }
 
 function parseCsv(value: string | undefined, fallback: string[]): string[] {
@@ -405,9 +415,13 @@ async function extractClusterSources(
 
 async function importClusterPayload(payload: IngestedClusterPayload): Promise<{
   importedArticles: number;
-  keywordSource: "openrouter" | "local";
+  keywordSource: "openrouter";
+  keywordStatus: "ready" | "keywords_pending";
   keywordModel: string | null;
   keywordError: string | null;
+  dedupeStrategy: "simhash" | "jaccard";
+  dedupeGroupCount: number;
+  dedupeMatchedArticleCount: number;
 }> {
   const generatedAt = parseDate(payload.generatedAt, new Date());
   const snapshotDate = startOfDay(toIsoDate(generatedAt));
@@ -433,7 +447,8 @@ async function importClusterPayload(payload: IngestedClusterPayload): Promise<{
   });
 
   const articleIds: string[] = [];
-  const localKeywords: string[] = [];
+  const dedupeInputs: DedupeDocumentInput[] = [];
+  const duplicateDomainsByArticleId = new Map<string, string[]>();
   const sourceStats = new Map<string, {
     sourceName: string;
     count: number;
@@ -491,6 +506,15 @@ async function importClusterPayload(payload: IngestedClusterPayload): Promise<{
     });
 
     articleIds.push(article.id);
+    duplicateDomainsByArticleId.set(article.id, article.duplicateDomains);
+    dedupeInputs.push({
+      id: article.id,
+      domain: source.domain,
+      title: source.title,
+      summary: null,
+      body: source.fullText ?? buildAnalysisText(source),
+      language: article.language,
+    });
 
     const featureSet = buildArticleFeatures(
       source.title,
@@ -498,7 +522,6 @@ async function importClusterPayload(payload: IngestedClusterPayload): Promise<{
       source.fullText ? null : buildAnalysisText(source),
       null,
     );
-    localKeywords.push(...featureSet.keywords);
     const sourceKey = source.domain.trim().toLowerCase();
     const sourceEntry = sourceStats.get(sourceKey) ?? {
       sourceName: source.domain,
@@ -559,6 +582,29 @@ async function importClusterPayload(payload: IngestedClusterPayload): Promise<{
     },
   });
 
+  const dedupePlan = buildSoftDedupePlan(dedupeInputs, {
+    strategy: resolveDedupeStrategy(process.env.KAGI_DEDUPE_STRATEGY),
+    mirrorDomainsOnAllMembers: true,
+    simHashMinJaccardSimilarity: parseUnitFloat(process.env.KAGI_DEDUPE_SIMHASH_MIN_JACCARD, 0.9),
+  });
+  for (const update of dedupePlan.updates) {
+    if (update.duplicateDomains.length === 0) continue;
+    const existingDomains = duplicateDomainsByArticleId.get(update.id) ?? [];
+    const mergedDomains = [...new Set([...existingDomains, ...update.duplicateDomains])].sort((a, b) =>
+      a.localeCompare(b),
+    );
+    await prisma.article.update({
+      where: { id: update.id },
+      data: {
+        duplicateDomains: mergedDomains,
+        duplicateCount: mergedDomains.length,
+      },
+    });
+  }
+  printEvent(
+    `[kagi:ingest][dedupe] strategy=${dedupePlan.strategy} groups=${dedupePlan.groupCount} matchedArticles=${dedupePlan.matchedArticleCount}`,
+  );
+
   const clusterKeywordResult = await buildClusterKeywordsWithOpenRouter(
     payload.chosenCluster.title,
     payload.sources.map((source) => ({
@@ -567,7 +613,11 @@ async function importClusterPayload(payload: IngestedClusterPayload): Promise<{
       body: source.fullText ?? null,
       language: null,
     })),
-    [...new Set(localKeywords)].slice(0, 8),
+    {
+      onAttemptLog: (message) => {
+        printEvent(`[kagi:ingest][keywords] ${payload.chosenCluster.storyId} ${message}`);
+      },
+    },
   );
 
   const existingClusterFeature = await prisma.nlpFeature.findFirst({
@@ -585,8 +635,12 @@ async function importClusterPayload(payload: IngestedClusterPayload): Promise<{
         featureSet: toInputJson({
           keywords: clusterKeywordResult.keywords,
           keywordSource: clusterKeywordResult.source,
+          keywordStatus: clusterKeywordResult.status,
           keywordModel: clusterKeywordResult.model,
           keywordError: clusterKeywordResult.error,
+          dedupeStrategy: dedupePlan.strategy,
+          dedupeGroupCount: dedupePlan.groupCount,
+          dedupeMatchedArticleCount: dedupePlan.matchedArticleCount,
           kagiClusterNumber: payload.chosenCluster.clusterNumber,
         }),
       },
@@ -599,8 +653,12 @@ async function importClusterPayload(payload: IngestedClusterPayload): Promise<{
         featureSet: toInputJson({
           keywords: clusterKeywordResult.keywords,
           keywordSource: clusterKeywordResult.source,
+          keywordStatus: clusterKeywordResult.status,
           keywordModel: clusterKeywordResult.model,
           keywordError: clusterKeywordResult.error,
+          dedupeStrategy: dedupePlan.strategy,
+          dedupeGroupCount: dedupePlan.groupCount,
+          dedupeMatchedArticleCount: dedupePlan.matchedArticleCount,
           kagiClusterNumber: payload.chosenCluster.clusterNumber,
         }),
       },
@@ -639,8 +697,12 @@ async function importClusterPayload(payload: IngestedClusterPayload): Promise<{
   return {
     importedArticles,
     keywordSource: clusterKeywordResult.source,
+    keywordStatus: clusterKeywordResult.status,
     keywordModel: clusterKeywordResult.model,
     keywordError: clusterKeywordResult.error,
+    dedupeStrategy: dedupePlan.strategy,
+    dedupeGroupCount: dedupePlan.groupCount,
+    dedupeMatchedArticleCount: dedupePlan.matchedArticleCount,
   };
 }
 
@@ -703,12 +765,20 @@ async function main() {
     successfulExtractions: number;
     failedExtractions: number;
     importedArticles: number;
-    keywordSource: "openrouter" | "local";
+    keywordSource: "openrouter";
+    keywordStatus: "ready" | "keywords_pending";
     keywordModel: string | null;
     keywordError: string | null;
+    dedupeStrategy: "simhash" | "jaccard";
+    dedupeGroupCount: number;
+    dedupeMatchedArticleCount: number;
   }> = [];
   let importedClusters = 0;
   let importedArticles = 0;
+  let keywordReadyClusters = 0;
+  let keywordPendingClusters = 0;
+  let dedupeGroupsTotal = 0;
+  let dedupeMatchedArticlesTotal = 0;
   const failedUrls: FailedUrlRecord[] = [];
   const clusterProgressStartedAt = Date.now();
 
@@ -764,10 +834,20 @@ async function main() {
 
     const importResult = await importClusterPayload(payload);
     console.log(
-      `[kagi:ingest] keywords source=${importResult.keywordSource} model=${importResult.keywordModel ?? "n/a"} error=${
+      `[kagi:ingest] keywords source=${importResult.keywordSource} status=${importResult.keywordStatus} model=${importResult.keywordModel ?? "n/a"} error=${
         importResult.keywordError ?? "none"
       }`,
     );
+    console.log(
+      `[kagi:ingest] dedupe strategy=${importResult.dedupeStrategy} groups=${importResult.dedupeGroupCount} matchedArticles=${importResult.dedupeMatchedArticleCount}`,
+    );
+    if (importResult.keywordStatus === "ready") {
+      keywordReadyClusters += 1;
+    } else {
+      keywordPendingClusters += 1;
+    }
+    dedupeGroupsTotal += importResult.dedupeGroupCount;
+    dedupeMatchedArticlesTotal += importResult.dedupeMatchedArticleCount;
 
     importedClusters += 1;
     importedArticles += importResult.importedArticles;
@@ -782,8 +862,12 @@ async function main() {
       failedExtractions: sources.filter((item) => item.extractionStatus === "FAILED").length,
       importedArticles: importResult.importedArticles,
       keywordSource: importResult.keywordSource,
+      keywordStatus: importResult.keywordStatus,
       keywordModel: importResult.keywordModel,
       keywordError: importResult.keywordError,
+      dedupeStrategy: importResult.dedupeStrategy,
+      dedupeGroupCount: importResult.dedupeGroupCount,
+      dedupeMatchedArticleCount: importResult.dedupeMatchedArticleCount,
     });
 
     renderProgress("clusters", index + 1, selected.length, clusterProgressStartedAt, chosen.categoryName);
@@ -806,6 +890,15 @@ async function main() {
       perDomainConcurrency: extractionPerDomainConcurrency,
       retries: extractionMaxRetries,
       failedUrlCount: failedUrls.length,
+    },
+    keywords: {
+      readyClusters: keywordReadyClusters,
+      pendingClusters: keywordPendingClusters,
+    },
+    dedupe: {
+      strategy: resolveDedupeStrategy(process.env.KAGI_DEDUPE_STRATEGY),
+      totalGroups: dedupeGroupsTotal,
+      totalMatchedArticles: dedupeMatchedArticlesTotal,
     },
     baseDir,
     results,

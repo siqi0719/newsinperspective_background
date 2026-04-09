@@ -19,7 +19,7 @@
 # Shared notebook template for team analysis on exported app data.
 #
 # Example notebook:
-# 1. Consolidate saved exports with `pnpm export:kagi:notebook`
+# 1. Export from Postgres with `pnpm export:kagi:notebook`
 # 2. Sync the workspace to `MyDrive/NewsInPerspective`
 # 3. Open `notebooks/nlp_analysis.ipynb` in Colab or run this template locally
 #

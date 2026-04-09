@@ -36,6 +36,14 @@ export const storyDetailSchema = storyListItemSchema.extend({
       url: z.string().url(),
       domain: z.string(),
       syndicatedDomains: z.array(z.string()),
+      nearDuplicatePeers: z.array(
+        z.object({
+          articleId: z.string(),
+          title: z.string(),
+          domain: z.string(),
+          url: z.string().url(),
+        }),
+      ),
       sourceName: z.string(),
       publishedAt: z.string(),
       summary: z.string().nullable(),

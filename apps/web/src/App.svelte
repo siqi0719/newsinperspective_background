@@ -734,7 +734,11 @@
 
             <div class="article-grid" use:debugComponent={componentLabel("ArticleList", shortId(section.selectedStory.id))}>
               {#each section.selectedStory.articles as article}
-                <article class="article-entry" use:debugComponent={componentLabel("ArticleCard", `${article.domain} / ${shortId(article.id, 8)}`)}>
+                <article
+                  id={`article-${article.id}`}
+                  class="article-entry"
+                  use:debugComponent={componentLabel("ArticleCard", `${article.domain} / ${shortId(article.id, 8)}`)}
+                >
                   <div class="article-head-rail">
                     <header class="article-head" use:debugComponent={componentLabel("ArticleHeader", article.domain)}>
                       <p class="meta article-meta">
@@ -758,8 +762,18 @@
                   <div class="article-card-body">
                     <div class="article-body">
                       <p>{article.summary ?? "No summary available."}</p>
-                      {#if article.syndicatedDomains.length > 0}
-                        <p class="signals">Syndicated on {article.syndicatedDomains.join(", ")}</p>
+                      {#if article.nearDuplicatePeers.length > 0}
+                        <p class="signals">
+                          Possible near-duplicate coverage:
+                          {#each article.nearDuplicatePeers as peer, peerIndex}
+                            {#if peerIndex > 0}, {/if}
+                            <a href={`#article-${peer.articleId}`}>{peer.domain}</a>
+                          {/each}
+                        </p>
+                      {:else if article.syndicatedDomains.length > 0}
+                        <p class="signals">
+                          Possible near-duplicate coverage on {article.syndicatedDomains.join(", ")}
+                        </p>
                       {/if}
                       <p class="signals">
                         Sentiment {article.sentiment} · Subjectivity {article.subjectivity} ·
@@ -1046,6 +1060,8 @@
   }
 
   .detail-head {
+    position: relative;
+    z-index: 10; /* Ensures the main panel header always stays above scrolling list items */
     border-bottom: 1px solid var(--border);
     margin: -2px -2px 12px;
     padding: 2px 2px 0;
@@ -1125,15 +1141,18 @@
 
   .article-grid {
     position: relative;
-    display: grid;
+    display: flex;
+    flex-direction: column;
     gap: 14px;
     max-height: 560px;
     overflow-y: auto;
     overflow-x: hidden;
-    padding-top: 10px;
+    /* 1. Remove padding-top and scroll-padding-top to eliminate the Y-axis gap */
     padding-right: 6px;
-    scroll-padding-top: 10px;
     background: linear-gradient(180deg, rgba(245, 249, 255, 0.92), rgba(245, 249, 255, 0) 44px);
+    
+    /* 2. Optional: If you want visual spacing above the list, use margin instead so it sits OUTSIDE the scroll area */
+    margin-top: 10px; 
   }
 
   .article-entry {
@@ -1142,12 +1161,14 @@
 
   .article-head-rail {
     position: sticky;
-    top: 10px;
+    top: 0;
     z-index: 8;
     background: linear-gradient(180deg, rgba(245, 249, 255, 0.98), rgba(245, 249, 255, 0.94));
   }
 
   .article-card-body {
+    position: relative;
+    z-index: 1; 
     margin-top: -1px;
     padding: 0;
     border-radius: 0 0 16px 16px;

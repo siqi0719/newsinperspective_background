@@ -1,5 +1,4 @@
 import { Prisma, RunStatus, ScopeType } from "@prisma/client";
-import { ArticleFeatureSet } from "../domain/types.js";
 import { extractRegion } from "../domain/category.js";
 import { env } from "../config/env.js";
 import { createFileLogger } from "../lib/file-logger.js";
@@ -144,7 +143,6 @@ export async function runIngestion(date: string): Promise<{ runId: string; statu
   let selectedFeeds: Array<{ url: string; category: string | null; sourceName: string | null }> = [];
   let articles: Awaited<ReturnType<typeof prisma.article.findMany>> = [];
   let clusters: Array<{ key: string; title: string; category: string | null; articleIds: string[] }> = [];
-  const articleFeatureById = new Map<string, ArticleFeatureSet>();
   let finalStatus: RunStatus = RunStatus.FAILED;
   let fatalError: Error | null = null;
 
@@ -215,8 +213,6 @@ export async function runIngestion(date: string): Promise<{ runId: string; statu
             saved.contentSnippet,
             saved.language,
           );
-          articleFeatureById.set(saved.id, featureSet);
-
           await prisma.nlpFeature.upsert({
             where: {
               id: `${saved.id}-article`,
@@ -320,11 +316,6 @@ export async function runIngestion(date: string): Promise<{ runId: string; statu
       const clusterArticlesForKeywords = articles.filter((article) =>
         cluster.articleIds.includes(article.id),
       );
-      const localClusterKeywords = [
-        ...new Set(
-          cluster.articleIds.flatMap((articleId) => articleFeatureById.get(articleId)?.keywords ?? []),
-        ),
-      ].slice(0, 8);
 
       const clusterKeywordResult = await buildClusterKeywordsWithOpenRouter(
         cluster.title,
@@ -334,7 +325,6 @@ export async function runIngestion(date: string): Promise<{ runId: string; statu
           body: article.fullText ?? article.contentSnippet,
           language: article.language,
         })),
-        localClusterKeywords,
       );
 
       await prisma.nlpFeature.create({
@@ -345,6 +335,7 @@ export async function runIngestion(date: string): Promise<{ runId: string; statu
             order: index,
             keywords: clusterKeywordResult.keywords,
             keywordSource: clusterKeywordResult.source,
+            keywordStatus: clusterKeywordResult.status,
             keywordModel: clusterKeywordResult.model,
             keywordError: clusterKeywordResult.error,
           }),

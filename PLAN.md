@@ -250,6 +250,7 @@ These items still need work before Milestone 1 feels truly closed:
 - [ ] Use only OpenRouter for keyword tagging.
 - [ ] Notebook export only uses Database
 - [ ] Deduplicate substantially identical article texts.
+- [ ] Improve URL resolution so intermediary `google.com` links are reliably resolved to publisher final URLs, while preserving original URL.
 - [ ] Integrate more LLM infrastructure to run "tasks" against all articles in a cluster
   - [ ] Summarize the entire cluster into a neutral single summary.
   - [ ] Identify notable 'unique' aspects and notable ommissions against the cluster for each article. 
@@ -257,6 +258,7 @@ These items still need work before Milestone 1 feels truly closed:
   - [ ] Fear-mongering and sensationalism index.
   - [ ] Tagging of NERs and topics.
   - [ ] Run only against most relevant cluster.
+    - Use current `importanceScore` ranking as the selector (top 1 cluster per active category/date by default).
 - [ ] Add news cluster page which shows one cluster in more detail:
   - Summary of the cluster as a whole.
   - How many sources? Which sources? Which countries? Which languages?
@@ -266,6 +268,20 @@ These items still need work before Milestone 1 feels truly closed:
     - Poltical leanings.
     - Fear-mongering and sensationalism index.
     - NER and topic tags.
+
+### Milestone 2 Execution Rules
+
+- OpenRouter failures must not block ingestion: retry with backoff (`5s`, `15s`, `60s`), then mark the record as `keywords_pending`.
+- Reprocessing job should target only records with missing OpenRouter outputs (`keywords_pending` or null keyword fields).
+- Notebook export must read from Postgres only; no direct export from raw Kagi snapshot folders.
+
+### Milestone 2 Acceptance Criteria
+
+- `pnpm kagi:ingest` completes without manual intervention and logs OpenRouter success/failure counts.
+- At least 95% of imported articles have keyword tags after one ingest run plus one retry pass.
+- Duplicate-text handling removes or links near-identical article bodies across different URLs/domains.
+- Cluster detail page renders summary, source/country/language counts, and task sections from stored DB results.
+- V2 cluster tasks run only on clusters selected by the existing `importanceScore` rule.
 
 ## Additional Product Requirements
 

@@ -5,7 +5,7 @@ This workspace is for exploratory NLP analysis on slices of data exported from t
 ## Files
 
 - `src/export_news_slice.py`: exports one date slice from the app API into flat JSONL tables
-- `src/consolidate_kagi_exports.py`: consolidates saved Kagi cluster exports into `news.jsonl`
+- `src/consolidate_kagi_exports.py`: optional snapshot flattener for legacy saved Kagi exports
 - `templates/nlp_analysis.py`: Jupytext notebook template for shared analysis workflows
 - `nlp_analysis.ipynb`: Colab-ready notebook entrypoint that reads `MyDrive/NewsInPerspective/news.jsonl`
 - `requirements.txt`: Python dependencies for notebook work
@@ -77,12 +77,26 @@ Each row is one article with denormalized cluster/story fields alongside article
 signals, and metadata. The cluster UUID is exported as `cluster_id`. Kagi's numeric cluster
 label is only kept as `kagi_cluster_number` where available.
 
-## Consolidate saved Kagi exports
+## Export from database (recommended)
+
+Generate `notebooks/news.jsonl` directly from Postgres:
+
+```bash
+pnpm export:kagi:notebook
+```
+
+Optional arguments:
+
+```bash
+pnpm export:kagi:notebook 2026-04-04 /tmp/news.jsonl
+```
+
+## Consolidate saved Kagi exports (legacy)
 
 If you have already saved Kagi random-cluster exports, you can flatten all existing `cluster.json` files into `news.jsonl`:
 
 ```bash
-pnpm export:kagi:notebook
+pnpm export:kagi:snapshots
 ```
 
 This scans:

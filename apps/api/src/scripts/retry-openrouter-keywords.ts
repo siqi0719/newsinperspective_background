@@ -1,34 +1,33 @@
-import { readdir, readFile, stat, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { Prisma, ScopeType } from "@prisma/client";
 import "../config/env.js";
 import { prisma } from "../lib/prisma.js";
 import { extractKeywordsWithOpenRouter } from "../services/openrouter-keywords.js";
 
-interface ComparisonRow {
-  rank: number;
-  clusterId: string;
-  storyDate: string;
-  title: string;
-  articleCount: number;
-  sourceCount: number;
-  language: string | null;
-  baseline: string[];
-  statistical: string[];
-  openrouter: { keywords: string[]; model: string; error: string | null };
+type ClusterFeaturePayload = {
+  keywords?: unknown;
+  keywordSource?: unknown;
+  keywordStatus?: unknown;
+  keywordModel?: unknown;
+  keywordError?: unknown;
+  [key: string]: unknown;
+};
+
+function toInputJson(value: unknown): Prisma.InputJsonValue {
+  return value as Prisma.InputJsonValue;
 }
 
-interface ComparisonFile {
-  generatedAt: string;
-  fromDate: string;
-  limit: number;
-  offset: number;
-  results: ComparisonRow[];
-  retriedAt?: string;
-  retryStats?: {
-    attempted: number;
-    updated: number;
-    stillMissing: number;
-  };
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function parseDateArg(value: string | undefined): Date | null {
+  if (!value) return null;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error(`Invalid date: ${value}. Expected YYYY-MM-DD.`);
+  }
+  return parsed;
 }
 
 function joinText(parts: Array<string | null | undefined>, maxLength: number): string {
@@ -46,96 +45,84 @@ function pickLanguage(values: Array<string | null | undefined>): string | null {
   return sorted[0]?.[0] ?? null;
 }
 
-function needsRetry(row: ComparisonRow): boolean {
-  return row.openrouter.error !== null || row.openrouter.keywords.length === 0;
+function readKeywords(payload: ClusterFeaturePayload): string[] {
+  if (!Array.isArray(payload.keywords)) return [];
+  return payload.keywords.filter((value): value is string => typeof value === "string").map((value) => value.trim()).filter(Boolean);
 }
 
-async function resolveInputPath(candidate: string | undefined): Promise<string> {
-  if (candidate) {
-    return resolve(process.cwd(), candidate);
-  }
-
-  const exportDir = resolve(process.cwd(), "notebooks", "exports", "keyword-comparison");
-  const entries = await readdir(exportDir);
-  const jsonEntries = entries.filter((entry) => entry.endsWith(".json"));
-  if (jsonEntries.length === 0) {
-    throw new Error(`No keyword comparison exports found in ${exportDir}`);
-  }
-
-  let newestPath: string | null = null;
-  let newestMtime = -1;
-  for (const entry of jsonEntries) {
-    const fullPath = resolve(exportDir, entry);
-    const meta = await stat(fullPath);
-    if (meta.mtimeMs > newestMtime) {
-      newestMtime = meta.mtimeMs;
-      newestPath = fullPath;
-    }
-  }
-
-  if (!newestPath) {
-    throw new Error(`Unable to resolve latest keyword comparison export in ${exportDir}`);
-  }
-
-  return newestPath;
+function isPending(payload: ClusterFeaturePayload): boolean {
+  const keywordStatus = payload.keywordStatus;
+  if (keywordStatus === "keywords_pending") return true;
+  const keywordSource = payload.keywordSource;
+  const keywords = readKeywords(payload);
+  return keywordSource === "openrouter" && keywords.length === 0;
 }
 
 async function main() {
-  const inputArg = process.argv[2];
-  const inputPath = await resolveInputPath(inputArg);
-  const maxBodyLength = 6000;
+  const limit = parsePositiveInt(process.argv[2], 50);
+  const dateFilter = parseDateArg(process.argv[3]);
 
-  const raw = await readFile(inputPath, "utf8");
-  const parsed = JSON.parse(raw) as ComparisonFile;
-  const rowsToRetry = parsed.results.filter(needsRetry);
-
-  if (!inputArg) {
-    console.log(`No file argument provided, using latest export automatically.`);
-  }
-  console.log(`Retrying OpenRouter keywords for ${rowsToRetry.length}/${parsed.results.length} clusters`);
-  console.log(`Input file: ${inputPath}`);
-
-  let updated = 0;
-
-  for (const row of rowsToRetry) {
-    const cluster = await prisma.storyCluster.findUnique({
-      where: { id: row.clusterId },
-      include: {
-        articles: {
-          orderBy: { rank: "asc" },
-          include: {
-            article: {
-              select: {
-                title: true,
-                summary: true,
-                contentSnippet: true,
-                fullText: true,
-                language: true,
+  const features = await prisma.nlpFeature.findMany({
+    where: {
+      scopeType: ScopeType.CLUSTER,
+      ...(dateFilter
+        ? {
+            cluster: {
+              storyDate: dateFilter,
+            },
+          }
+        : {}),
+    },
+    orderBy: { updatedAt: "asc" },
+    include: {
+      cluster: {
+        select: {
+          id: true,
+          title: true,
+          storyDate: true,
+          articles: {
+            orderBy: { rank: "asc" },
+            include: {
+              article: {
+                select: {
+                  title: true,
+                  summary: true,
+                  contentSnippet: true,
+                  fullText: true,
+                  language: true,
+                },
               },
             },
           },
         },
       },
-    });
+    },
+  });
 
-    if (!cluster) {
-      row.openrouter = {
-        keywords: [],
-        model: row.openrouter.model,
-        error: `Cluster not found in DB: ${row.clusterId}`,
-      };
-      continue;
-    }
+  const pending = features
+    .filter((item) => item.cluster !== null)
+    .filter((item) => isPending(item.featureSet as ClusterFeaturePayload))
+    .slice(0, limit);
 
-    const topArticles = cluster.articles.slice(0, 6).map((item) => item.article);
+  console.log(
+    `[retry:openrouter-keywords] pending=${pending.length} limit=${limit}${dateFilter ? ` date=${process.argv[3]}` : ""}`,
+  );
+
+  let updatedReady = 0;
+  let stillPending = 0;
+
+  for (const [index, item] of pending.entries()) {
+    const cluster = item.cluster!;
+    const payload = item.featureSet as ClusterFeaturePayload;
+    const topArticles = cluster.articles.slice(0, 6).map((link) => link.article);
     const language = pickLanguage(topArticles.map((article) => article.language));
     const summary = joinText(topArticles.map((article) => article.summary), 3000);
-    const body = joinText(
-      topArticles.map((article) => article.fullText ?? article.contentSnippet),
-      maxBodyLength,
-    );
+    const body = joinText(topArticles.map((article) => article.fullText ?? article.contentSnippet), 6000);
+
     console.log("");
-    console.log(`[${row.rank}] ${cluster.title}`);
+    console.log(
+      `[retry:openrouter-keywords] ${index + 1}/${pending.length} cluster=${cluster.id} title=${cluster.title}`,
+    );
 
     const openrouter = await extractKeywordsWithOpenRouter({
       title: cluster.title,
@@ -144,36 +131,52 @@ async function main() {
       language,
       maxKeywords: 8,
       onAttemptLog: (message) => {
-        console.log(`   ${message}`);
+        console.log(`  ${message}`);
       },
     });
 
-    row.openrouter = openrouter;
+    const nextPayload: ClusterFeaturePayload = {
+      ...payload,
+      keywordSource: "openrouter",
+      keywordModel: openrouter.model,
+      keywordRetriedAt: new Date().toISOString(),
+    };
+
     if (!openrouter.error && openrouter.keywords.length > 0) {
-      updated += 1;
+      nextPayload.keywords = openrouter.keywords;
+      nextPayload.keywordStatus = "ready";
+      nextPayload.keywordError = null;
+      updatedReady += 1;
+      console.log(`  success -> ${openrouter.keywords.join(", ")}`);
+    } else {
+      nextPayload.keywords = [];
+      nextPayload.keywordStatus = "keywords_pending";
+      nextPayload.keywordError = openrouter.error;
+      stillPending += 1;
+      console.log(`  pending -> ${openrouter.error ?? "unknown OpenRouter failure"}`);
     }
 
-    if (openrouter.error) {
-      console.log(`${row.rank}. ${cluster.title} -> error`);
-    } else {
-      console.log(`${row.rank}. ${cluster.title} -> ${openrouter.keywords.join(", ")}`);
-    }
+    await prisma.nlpFeature.update({
+      where: { id: item.id },
+      data: {
+        featureSet: toInputJson(nextPayload),
+      },
+    });
   }
 
-  const stillMissing = parsed.results.filter(needsRetry).length;
-  parsed.retriedAt = new Date().toISOString();
-  parsed.retryStats = {
-    attempted: rowsToRetry.length,
-    updated,
-    stillMissing,
-  };
-
-  await writeFile(inputPath, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
-
   console.log("");
-  console.log(`Updated: ${updated}`);
-  console.log(`Still missing: ${stillMissing}`);
-  console.log(`Saved: ${inputPath}`);
+  console.log(
+    JSON.stringify(
+      {
+        attempted: pending.length,
+        updatedReady,
+        stillPending,
+        dateFilter: process.argv[3] ?? null,
+      },
+      null,
+      2,
+    ),
+  );
 }
 
 main()
