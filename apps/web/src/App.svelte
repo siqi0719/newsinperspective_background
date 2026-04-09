@@ -7,6 +7,9 @@
       ? `${window.location.protocol}//${window.location.hostname}:4400`
       : "http://localhost:4400";
   const STORIES_PER_DAY = 10;
+  const DEVTOOLS_LABEL_CLASS = "debug-component-labels";
+  const DEVTOOLS_OVERLAY_CLASS = "debug-component-overlay";
+  const DEVTOOLS_OPEN_THRESHOLD = 160;
 
   interface DaySection {
     date: string;
@@ -28,6 +31,194 @@
   let loadingNextDate = false;
   let nextDateCursor = 0;
   let infiniteObserver: IntersectionObserver | null = null;
+  let activeDebugNodes: HTMLElement[] = [];
+  let debugOverlay: HTMLDivElement | null = null;
+  let debugRenderFrame: number | null = null;
+
+  function setComponentLabelVisibility(active: boolean): void {
+    if (typeof document === "undefined" || !import.meta.env.DEV) return;
+    document.documentElement.classList.toggle(DEVTOOLS_LABEL_CLASS, active);
+    if (!active) {
+      activeDebugNodes = [];
+    }
+    requestDebugRender();
+  }
+
+  function devtoolsAreOpen(): boolean {
+    if (typeof window === "undefined") return false;
+    return window.outerWidth - window.innerWidth > DEVTOOLS_OPEN_THRESHOLD
+      || window.outerHeight - window.innerHeight > DEVTOOLS_OPEN_THRESHOLD;
+  }
+
+  function shortId(value: string, max = 10): string {
+    return value.length > max ? `${value.slice(0, max)}...` : value;
+  }
+
+  function componentLabel(name: string, detail?: string): string {
+    return detail ? `${name} [${detail}]` : name;
+  }
+
+  function debugComponent(node: HTMLElement, label: string): { update: (value: string) => void; destroy: () => void } {
+    if (!import.meta.env.DEV) {
+      return {
+        update() {},
+        destroy() {},
+      };
+    }
+
+    const applyLabel = (value: string) => {
+      node.dataset.debugComponent = value;
+    };
+
+    applyLabel(label);
+
+    return {
+      update(value: string) {
+        applyLabel(value);
+      },
+      destroy() {
+        delete node.dataset.debugComponent;
+      },
+    };
+  }
+
+  function ensureDebugOverlay(): HTMLDivElement | null {
+    if (typeof document === "undefined" || !import.meta.env.DEV) return null;
+    if (debugOverlay?.isConnected) return debugOverlay;
+
+    const overlay = document.createElement("div");
+    overlay.className = DEVTOOLS_OVERLAY_CLASS;
+    overlay.setAttribute("aria-hidden", "true");
+    document.body.appendChild(overlay);
+    debugOverlay = overlay;
+    return overlay;
+  }
+
+  function clearDebugOverlay(): void {
+    if (debugOverlay) {
+      debugOverlay.replaceChildren();
+    }
+  }
+
+  function getDebugNodeChain(target: EventTarget | null): HTMLElement[] {
+    if (!(target instanceof Element)) return [];
+
+    const chain: HTMLElement[] = [];
+    let current: Element | null = target;
+
+    while (current) {
+      if (current instanceof HTMLElement && current.dataset.debugComponent) {
+        chain.push(current);
+      }
+      current = current.parentElement;
+    }
+
+    return chain.reverse();
+  }
+
+  function sameDebugNodeChain(nextNodes: HTMLElement[]): boolean {
+    return nextNodes.length === activeDebugNodes.length
+      && nextNodes.every((node, index) => node === activeDebugNodes[index]);
+  }
+
+  function renderDebugOverlay(): void {
+    debugRenderFrame = null;
+
+    if (!import.meta.env.DEV || typeof document === "undefined") return;
+
+    const overlay = ensureDebugOverlay();
+    if (!overlay) return;
+
+    clearDebugOverlay();
+
+    if (!document.documentElement.classList.contains(DEVTOOLS_LABEL_CLASS) || activeDebugNodes.length === 0) {
+      return;
+    }
+
+    const placedLabels: Array<{ top: number; left: number; right: number; bottom: number }> = [];
+    const viewportPadding = 8;
+    const overlapGap = 6;
+
+    for (const node of activeDebugNodes) {
+      const labelText = node.dataset.debugComponent;
+      if (!labelText) continue;
+
+      const rect = node.getBoundingClientRect();
+      if (rect.width === 0 && rect.height === 0) continue;
+
+      const label = document.createElement("div");
+      label.className = `${DEVTOOLS_OVERLAY_CLASS}-label`;
+      label.textContent = labelText;
+      overlay.appendChild(label);
+
+      const labelWidth = label.offsetWidth;
+      const labelHeight = label.offsetHeight;
+      let left = Math.round(rect.left + 8);
+      let top = Math.round(rect.top - labelHeight - 6);
+
+      if (left + labelWidth > window.innerWidth - viewportPadding) {
+        left = Math.max(viewportPadding, window.innerWidth - viewportPadding - labelWidth);
+      }
+      if (top < viewportPadding) {
+        top = Math.round(rect.top + 6);
+      }
+
+      let adjusted = true;
+      while (adjusted) {
+        adjusted = false;
+
+        for (const placed of placedLabels) {
+          const overlaps = left < placed.right
+            && left + labelWidth > placed.left
+            && top < placed.bottom
+            && top + labelHeight > placed.top;
+
+          if (!overlaps) continue;
+
+          top = placed.bottom + overlapGap;
+          if (top + labelHeight > window.innerHeight - viewportPadding) {
+            top = Math.max(viewportPadding, Math.round(rect.top - labelHeight - 6));
+          }
+          adjusted = true;
+        }
+      }
+
+      if (top + labelHeight > window.innerHeight - viewportPadding) {
+        top = Math.max(viewportPadding, window.innerHeight - viewportPadding - labelHeight);
+      }
+
+      label.style.transform = `translate(${left}px, ${top}px)`;
+      placedLabels.push({
+        top,
+        left,
+        right: left + labelWidth,
+        bottom: top + labelHeight,
+      });
+    }
+  }
+
+  function requestDebugRender(): void {
+    if (!import.meta.env.DEV || typeof window === "undefined") return;
+    if (debugRenderFrame !== null) return;
+    debugRenderFrame = window.requestAnimationFrame(renderDebugOverlay);
+  }
+
+  function handleDebugPointer(event: MouseEvent): void {
+    if (!import.meta.env.DEV || typeof document === "undefined") return;
+    if (!document.documentElement.classList.contains(DEVTOOLS_LABEL_CLASS)) return;
+
+    const nextNodes = getDebugNodeChain(event.target);
+    if (sameDebugNodeChain(nextNodes)) return;
+
+    activeDebugNodes = nextNodes;
+    requestDebugRender();
+  }
+
+  function handleDebugPointerLeave(): void {
+    if (activeDebugNodes.length === 0) return;
+    activeDebugNodes = [];
+    requestDebugRender();
+  }
 
   function formatDateRange(dateFrom: string, dateUntil: string): string {
     return dateFrom === dateUntil ? dateFrom : `${dateFrom} to ${dateUntil}`;
@@ -64,6 +255,31 @@
 
   function storyArticleTotal(section: DaySection): number {
     return section.stories.reduce((sum, story) => sum + story.articleCount, 0);
+  }
+
+  function faviconUrl(domain: string): string {
+    return `${API_BASE}/api/favicons/${encodeURIComponent(domain)}`;
+  }
+
+  function handleFaviconError(event: Event): void {
+    const target = event.currentTarget as HTMLImageElement | null;
+    if (!target) return;
+    target.style.display = "none";
+  }
+
+  function resolveDomainUrl(story: StoryDetail | null, domain: string): string | null {
+    if (!story) return null;
+    const normalizedDomain = domain.trim().toLowerCase();
+    const match = story.articles.find((article) =>
+      article.domain.trim().toLowerCase() === normalizedDomain
+      || article.syndicatedDomains.some((value) => value.trim().toLowerCase() === normalizedDomain)
+    );
+    return match?.url ?? null;
+  }
+
+  function otherSourceCount(story: StoryDetail | null): number {
+    if (!story) return 0;
+    return Math.max(0, story.sourceCount - story.topDomains.length);
   }
 
   function updateSection(date: string, updater: (section: DaySection) => DaySection): void {
@@ -262,6 +478,23 @@
   }
 
   onMount(() => {
+    let devtoolsInterval: number | null = null;
+    let syncDevtools: (() => void) | null = null;
+
+    if (import.meta.env.DEV) {
+      syncDevtools = () => {
+        setComponentLabelVisibility(devtoolsAreOpen());
+      };
+
+      syncDevtools();
+      devtoolsInterval = window.setInterval(syncDevtools, 900);
+      window.addEventListener("resize", syncDevtools);
+      window.addEventListener("resize", requestDebugRender);
+      window.addEventListener("scroll", requestDebugRender, true);
+      document.addEventListener("mouseover", handleDebugPointer, true);
+      document.addEventListener("mouseleave", handleDebugPointerLeave, true);
+    }
+
     (async () => {
       dates = await fetchJson<string[]>("/api/dates");
       if (!dates[0]) return;
@@ -272,6 +505,23 @@
     });
 
     return () => {
+      if (devtoolsInterval !== null) {
+        window.clearInterval(devtoolsInterval);
+      }
+      if (syncDevtools) {
+        window.removeEventListener("resize", syncDevtools);
+      }
+      window.removeEventListener("resize", requestDebugRender);
+      window.removeEventListener("scroll", requestDebugRender, true);
+      document.removeEventListener("mouseover", handleDebugPointer, true);
+      document.removeEventListener("mouseleave", handleDebugPointerLeave, true);
+      if (debugRenderFrame !== null) {
+        window.cancelAnimationFrame(debugRenderFrame);
+        debugRenderFrame = null;
+      }
+      debugOverlay?.remove();
+      debugOverlay = null;
+      setComponentLabelVisibility(false);
       infiniteObserver?.disconnect();
     };
   });
@@ -281,8 +531,8 @@
   <title>NewsInPerspective</title>
 </svelte:head>
 
-<main class="shell">
-  <section class="hero panel">
+<main class="shell" use:debugComponent={componentLabel("AppShell")}>
+  <section class="hero panel" use:debugComponent={componentLabel("HeroPanel")}>
     <p class="eyebrow">NewsInPerspective</p>
     <div class="hero-row">
       <div>
@@ -300,7 +550,7 @@
     </div>
 
     {#if settingsOpen}
-      <div class="settings-panel">
+      <div class="settings-panel" use:debugComponent={componentLabel("SettingsPanel")}>
         <label>
           <span>Start date</span>
           <select bind:value={startDate} on:change={handleStartDateChange}>
@@ -324,16 +574,16 @@
   </section>
 
   {#if globalError}
-    <p class="error">{globalError}</p>
+    <p class="error" use:debugComponent={componentLabel("GlobalError")}>{globalError}</p>
   {/if}
 
   {#each daySections as section (section.date)}
-    <section class="day-block panel">
-      <div class="day-separator">
+    <section class="day-block panel" use:debugComponent={componentLabel("DaySection", section.date)}>
+      <div class="day-separator" use:debugComponent={componentLabel("DaySeparator", section.date)}>
         <span>{section.date}</span>
       </div>
 
-      <div class="day-head">
+      <div class="day-head" use:debugComponent={componentLabel("DayHeader", section.date)}>
         <div>
           <p class="eyebrow">Top Stories</p>
           <h2>{section.date}</h2>
@@ -354,10 +604,11 @@
         </div>
       </div>
 
-      <div class="tab-row">
+      <div class="tab-row" use:debugComponent={componentLabel("CategoryTabs", section.date)}>
         <button
           class="tab"
           class:selected={!section.selectedCategory}
+          use:debugComponent={componentLabel("CategoryTab", "All")}
           on:click={() => handleCategoryChange(section.date, "")}
         >
           All
@@ -366,6 +617,7 @@
           <button
             class="tab"
             class:selected={section.selectedCategory === category}
+            use:debugComponent={componentLabel("CategoryTab", formatCategoryLabel(category))}
             on:click={() => handleCategoryChange(section.date, category)}
           >
             {formatCategoryLabel(category)}
@@ -373,25 +625,26 @@
         {/each}
       </div>
 
-      <div class="day-layout">
-        <div class="stories-column">
+      <div class="day-layout" use:debugComponent={componentLabel("DayLayout", section.date)}>
+        <div class="stories-column" use:debugComponent={componentLabel("StoryFeed", section.date)}>
           {#if section.error}
-            <p class="error">{section.error}</p>
+            <p class="error" use:debugComponent={componentLabel("SectionError", section.date)}>{section.error}</p>
           {/if}
 
           {#if section.loading && section.stories.length === 0}
-            <p class="loading">Loading stories...</p>
+            <p class="loading" use:debugComponent={componentLabel("StoryFeedLoading", section.date)}>Loading stories...</p>
           {/if}
 
           {#if !section.loading && section.stories.length === 0}
-            <p class="loading">No stories available for this date and category.</p>
+            <p class="loading" use:debugComponent={componentLabel("StoryFeedEmpty", section.date)}>No stories available for this date and category.</p>
           {/if}
 
-          <div class="stories">
+          <div class="stories" use:debugComponent={componentLabel("StoryList", section.date)}>
             {#each section.stories as story}
               <button
                 class="story-card"
                 class:active={section.selectedStory?.id === story.id}
+                use:debugComponent={componentLabel("StoryCard", shortId(story.id))}
                 on:click={() => loadStoryForSection(section.date, story.id)}
               >
                 <span class="meta">
@@ -405,53 +658,121 @@
           </div>
         </div>
 
-        <section class="detail panel">
+        <section class="detail panel" use:debugComponent={componentLabel("StoryDetail", section.date)}>
           {#if section.selectedStory}
-            <header>
-              <p class="eyebrow">
-                {formatScopeLabel(section.selectedStory.region, section.selectedStory.category)}
-              </p>
-              <h3>{section.selectedStory.title}</h3>
-              <p>
-                {section.selectedStory.articleCount} articles across
-                {section.selectedStory.sourceCount} sources ·
-                {formatDateRange(section.selectedStory.dateFrom, section.selectedStory.dateUntil)}
-              </p>
-            </header>
-
-            <div class="comparison">
-              {#if section.comparison}
-                <div class="chip-row">
-                  {#each section.comparison.sharedKeywords as keyword}
-                    <span class="chip">{keyword}</span>
+            <div class="detail-head" use:debugComponent={componentLabel("DetailHeader", shortId(section.selectedStory.id))}>
+              <header use:debugComponent={componentLabel("SelectedStoryHeader", shortId(section.selectedStory.id))}>
+                <p class="eyebrow">
+                  {formatScopeLabel(section.selectedStory.region, section.selectedStory.category)}
+                </p>
+                <h3>{section.selectedStory.title}</h3>
+                <p>
+                  {section.selectedStory.articleCount} articles across
+                  {section.selectedStory.sourceCount} sources ·
+                  {formatDateRange(section.selectedStory.dateFrom, section.selectedStory.dateUntil)}
+                </p>
+                <div
+                  class="domain-strip"
+                  aria-label="Top domains"
+                  use:debugComponent={componentLabel("TopDomains", shortId(section.selectedStory.id))}
+                >
+                  {#each section.selectedStory.topDomains as domain}
+                    {@const link = resolveDomainUrl(section.selectedStory, domain)}
+                    {#if link}
+                      <a
+                        class="domain-chip domain-link"
+                        href={link}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        <img
+                          class="favicon"
+                          src={faviconUrl(domain)}
+                          alt=""
+                          loading="lazy"
+                          width="14"
+                          height="14"
+                          on:error={handleFaviconError}
+                        />
+                        <span>{domain}</span>
+                      </a>
+                    {:else}
+                      <span class="domain-chip">
+                        <img
+                          class="favicon"
+                          src={faviconUrl(domain)}
+                          alt=""
+                          loading="lazy"
+                          width="14"
+                          height="14"
+                          on:error={handleFaviconError}
+                        />
+                        <span>{domain}</span>
+                      </span>
+                    {/if}
                   {/each}
+                  {#if otherSourceCount(section.selectedStory) > 0}
+                    <span class="domain-more">and {otherSourceCount(section.selectedStory)} other sources</span>
+                  {/if}
                 </div>
+              </header>
 
-                {#each section.comparison.framingSummary as line}
-                  <p>{line}</p>
-                {/each}
-              {/if}
+              <div class="comparison" use:debugComponent={componentLabel("ComparisonSummary", shortId(section.selectedStory.id))}>
+                {#if section.comparison}
+                  <div class="chip-row">
+                    {#each section.comparison.sharedKeywords as keyword}
+                      <span class="chip">{keyword}</span>
+                    {/each}
+                  </div>
+
+                  {#each section.comparison.framingSummary as line}
+                    <p>{line}</p>
+                  {/each}
+                {/if}
+              </div>
             </div>
 
-            <div class="article-grid">
+            <div class="article-grid" use:debugComponent={componentLabel("ArticleList", shortId(section.selectedStory.id))}>
               {#each section.selectedStory.articles as article}
-                <article>
-                  <p class="meta">{article.domain} · {article.publishedAt.slice(0, 10)}</p>
-                  <h4>{article.title}</h4>
-                  <p>{article.summary ?? "No summary available."}</p>
-                  {#if article.syndicatedDomains.length > 0}
-                    <p class="signals">Syndicated on {article.syndicatedDomains.join(", ")}</p>
-                  {/if}
-                  <p class="signals">
-                    Sentiment {article.sentiment} · Subjectivity {article.subjectivity} ·
-                    {article.biasSignals.join(", ") || "no bias flags"}
-                  </p>
-                  <a href={article.url} target="_blank" rel="noreferrer">Read source</a>
+                <article class="article-entry" use:debugComponent={componentLabel("ArticleCard", `${article.domain} / ${shortId(article.id, 8)}`)}>
+                  <div class="article-head-rail">
+                    <header class="article-head" use:debugComponent={componentLabel("ArticleHeader", article.domain)}>
+                      <p class="meta article-meta">
+                        <span class="domain-chip">
+                          <img
+                            class="favicon"
+                            src={faviconUrl(article.domain)}
+                            alt=""
+                            loading="lazy"
+                            width="14"
+                            height="14"
+                            on:error={handleFaviconError}
+                          />
+                          <span>{article.domain}</span>
+                        </span>
+                        <span>· {article.publishedAt.slice(0, 10)}</span>
+                      </p>
+                      <h4>{article.title}</h4>
+                    </header>
+                  </div>
+                  <div class="article-card-body">
+                    <div class="article-body">
+                      <p>{article.summary ?? "No summary available."}</p>
+                      {#if article.syndicatedDomains.length > 0}
+                        <p class="signals">Syndicated on {article.syndicatedDomains.join(", ")}</p>
+                      {/if}
+                      <p class="signals">
+                        Sentiment {article.sentiment} · Subjectivity {article.subjectivity} ·
+                        Bias &lt;not yet determined&gt;
+                      </p>
+                      <a href={article.url} target="_blank" rel="noreferrer">Read source</a>
+                    </div>
+                  </div>
                 </article>
               {/each}
             </div>
           {:else}
-            <div class="empty">
+            <div class="empty" use:debugComponent={componentLabel("DetailEmptyState", section.date)}>
               <h3>Select a cluster</h3>
               <p>Pick a story card to inspect the cross-source detail.</p>
             </div>
@@ -461,7 +782,11 @@
     </section>
   {/each}
 
-  <div class="load-anchor" use:observeInfiniteScroll>
+  <div
+    class="load-anchor"
+    use:observeInfiniteScroll
+    use:debugComponent={componentLabel("InfiniteScrollAnchor")}
+  >
     {#if loadingNextDate}
       <p>Loading next day...</p>
     {:else if nextDateCursor >= dates.length && daySections.length > 0}
@@ -679,6 +1004,10 @@
     align-items: start;
   }
 
+  .day-layout > * {
+    min-width: 0;
+  }
+
   .stories {
     display: grid;
     gap: 12px;
@@ -695,15 +1024,12 @@
     gap: 8px;
     cursor: pointer;
     transition:
-      transform 140ms ease,
       border-color 140ms ease,
       box-shadow 140ms ease;
   }
 
   .story-card:hover,
-  .story-card.active,
-  article:hover {
-    transform: translateY(-1px);
+  .story-card.active {
     border-color: var(--border-strong);
     box-shadow: 0 12px 24px rgba(20, 55, 111, 0.12);
   }
@@ -716,12 +1042,69 @@
 
   .detail {
     padding: 16px;
+    overflow: visible;
+  }
+
+  .detail-head {
+    border-bottom: 1px solid var(--border);
+    margin: -2px -2px 12px;
+    padding: 2px 2px 0;
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(255, 255, 255, 0.95));
   }
 
   .comparison {
     padding: 12px 0 18px;
-    border-bottom: 1px solid var(--border);
-    margin-bottom: 16px;
+    margin-bottom: 8px;
+  }
+
+  .domain-strip {
+    margin-top: 10px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .domain-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 9px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.86);
+    color: #2f435e;
+    font-size: 0.82rem;
+    line-height: 1;
+  }
+
+  .domain-link {
+    text-decoration: none;
+    color: inherit;
+  }
+
+  .domain-link:hover {
+    border-color: var(--border-strong);
+    box-shadow: 0 6px 14px rgba(20, 55, 111, 0.12);
+  }
+
+  .domain-more {
+    display: inline-flex;
+    align-items: center;
+    color: var(--muted);
+    font-size: 0.8rem;
+    padding-left: 2px;
+  }
+
+  .favicon {
+    border-radius: 3px;
+    flex: 0 0 14px;
+  }
+
+  .article-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
   }
 
   .chip-row {
@@ -741,28 +1124,89 @@
   }
 
   .article-grid {
+    position: relative;
     display: grid;
-    gap: 12px;
+    gap: 14px;
     max-height: 560px;
     overflow-y: auto;
+    overflow-x: hidden;
+    padding-top: 10px;
     padding-right: 6px;
+    scroll-padding-top: 10px;
+    background: linear-gradient(180deg, rgba(245, 249, 255, 0.92), rgba(245, 249, 255, 0) 44px);
   }
 
-  article {
-    padding: 14px;
-    border-radius: 16px;
+  .article-entry {
+    position: relative;
+  }
+
+  .article-head-rail {
+    position: sticky;
+    top: 10px;
+    z-index: 8;
+    background: linear-gradient(180deg, rgba(245, 249, 255, 0.98), rgba(245, 249, 255, 0.94));
+  }
+
+  .article-card-body {
+    margin-top: -1px;
+    padding: 0;
+    border-radius: 0 0 16px 16px;
     border: 1px solid var(--border);
+    border-top: 0;
     background: linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(242, 248, 255, 0.84));
+    overflow: hidden;
     transition:
-      transform 140ms ease,
       border-color 140ms ease,
       box-shadow 140ms ease;
+  }
+
+  .article-entry:hover .article-head,
+  .article-entry:hover .article-card-body {
+    border-color: var(--border-strong);
+  }
+
+  .article-entry:hover .article-card-body {
+    box-shadow: 0 12px 24px rgba(20, 55, 111, 0.12);
+  }
+
+  .article-head {
+    position: relative;
+    margin: 0;
+    padding: 10px 14px 8px;
+    display: grid;
+    gap: 6px;
+    border: 1px solid var(--border);
+    border-bottom: 1px solid rgba(20, 55, 111, 0.08);
+    border-radius: 16px 16px 0 0;
+    background: #f7fbff;
+    box-shadow:
+      0 1px 0 rgba(20, 55, 111, 0.08),
+      0 8px 16px rgba(20, 55, 111, 0.06);
+  }
+
+  .article-head .meta {
+    margin: 0;
+  }
+
+  .article-head h4 {
+    margin: 0;
+  }
+
+  .article-body {
+    padding: 12px 14px 14px;
   }
 
   article p {
     margin: 6px 0;
     color: #34445c;
     line-height: 1.52;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  article h4 {
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
 
   article a {
@@ -797,6 +1241,31 @@
     display: grid;
     place-items: center;
     color: var(--muted);
+  }
+
+  :global(.debug-component-overlay) {
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 2147483647;
+    overflow: hidden;
+  }
+
+  :global(.debug-component-overlay-label) {
+    position: absolute;
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: rgba(20, 32, 51, 0.94);
+    color: #f8fbff;
+    font-size: 0.68rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    white-space: nowrap;
+    max-width: min(32ch, calc(100vw - 16px));
+    overflow: hidden;
+    text-overflow: ellipsis;
+    box-shadow: 0 8px 18px rgba(20, 32, 51, 0.18);
   }
 
   @media (max-width: 980px) {

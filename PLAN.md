@@ -8,37 +8,37 @@ a web application which can show different perspectives on news stories.
 Goal: Build a `pnpm` + `turbo` monorepo with a Svelte + Vite frontend and a Node/TypeScript backend using Prisma + Postgres with the following capabilities:
 
 - fetch the Kagi feed catalog from `https://kite.kagi.com/kite.json`
-- Use Kagi clusters to group articles into stories
-- Use source URLs to retrieve raw article text
-- Normalize and deduplicate articles
-- Command line-based ingestion runner
-- Frontend can show today's 10 top news clusters.
+- ✅ Use Kagi clusters to group articles into stories
+- ✅ Use source URLs to retrieve raw article text
+- ✅ Normalize and deduplicate articles
+- ✅ Command line-based ingestion runner
+- ✅ Frontend can show today's 10 top news clusters.
 - Infinite scroll: When reaching the bottom, the next day's top clusters are loaded and shown.
-- Exporting of ingested clusters to a JSON file for student experimation in Jupyter notebooks (template provided and uploaded to Google Drive).
-- Frontend looks visually appealing and is responsive.
+- ✅ Exporting of ingested clusters to a JSON file for student experimation in Jupyter notebooks (template provided and uploaded to Google Drive).
+- ✅ Frontend looks visually appealing and is responsive.
 
 ## Current Status
 
-Milestone 1 is partially complete.
+Milestone 1 is mostly complete.
 
 What is already in place:
 
-- monorepo with `apps/web`, `apps/api`, `packages/db`, and `packages/shared`
-- Fastify API backed by Prisma + Postgres
-- browser-based publisher extraction using Playwright
-- Kagi cluster export scripts
-- Kagi cluster import into the application database
-- ranked story API with a v1 `importanceScore`
-- feed-style frontend with category chooser, settings panel, and infinite scroll pagination
-- notebook export to a single `news.jsonl`
-- Colab-ready notebook and Google Drive sync workflow
+- ✅ monorepo with `apps/web`, `apps/api`, `packages/db`, and `packages/shared`
+- ✅ Fastify API backed by Prisma + Postgres
+- ✅ browser-based publisher extraction using Playwright
+- ✅ Kagi cluster export scripts
+- ✅ Kagi cluster import into the application database
+- ✅ ranked story API with a v1 `importanceScore`
+- ✅ feed-style frontend with category chooser, settings panel, and infinite scroll pagination
+- ✅ notebook export to a single `news.jsonl`
+- ✅ Colab-ready notebook and Google Drive sync workflow
 
 What is still incomplete or only partially complete:
 
 - Kagi import is still a snapshot importer layered onto the older `StoryCluster` schema
 - multilingual keyword extraction and language detection are not robust enough yet
 - the UI is currently filtered to likely-English stories as a pragmatic v1 clamp
-- there is no single end-to-end `kagi:sync` command that exports, imports, and refreshes notebook data
+- there is now a single end-to-end `kagi:ingest` command, but notebook/Drive sync are still intentionally explicit follow-up steps
 - the API and DB still reflect some legacy daily-cluster assumptions even though the UI now derives date ranges
 
 ## Architecture
@@ -244,6 +244,28 @@ These items still need work before Milestone 1 feels truly closed:
 - decide whether the product should keep the legacy RSS ingestion path in-tree during V1 or isolate it more clearly as a fallback / legacy path
 - consider adding a small API endpoint for top homepage categories or top stories so the frontend does not need to derive all homepage state client-side
 - validate that current Postgres-backed imported clusters match the latest saved Kagi exports after a normal sync run
+
+## Milestone 2 Todo List
+
+- [ ] Use only OpenRouter for keyword tagging.
+- [ ] Notebook export only uses Database
+- [ ] Deduplicate substantially identical article texts.
+- [ ] Integrate more LLM infrastructure to run "tasks" against all articles in a cluster
+  - [ ] Summarize the entire cluster into a neutral single summary.
+  - [ ] Identify notable 'unique' aspects and notable ommissions against the cluster for each article. 
+  - [ ] Identify political leaning to party ideology in the particular country.
+  - [ ] Fear-mongering and sensationalism index.
+  - [ ] Tagging of NERs and topics.
+  - [ ] Run only against most relevant cluster.
+- [ ] Add news cluster page which shows one cluster in more detail:
+  - Summary of the cluster as a whole.
+  - How many sources? Which sources? Which countries? Which languages?
+  - Sections for the tasks:
+    - Notable unique aspects.
+    - Notable omissions.
+    - Poltical leanings.
+    - Fear-mongering and sensationalism index.
+    - NER and topic tags.
 
 ## Additional Product Requirements
 

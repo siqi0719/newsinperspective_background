@@ -1,5 +1,6 @@
 import { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { getCachedFavicon } from "../services/favicon-cache.js";
 import {
   getSourceProfile,
   getStoryComparison,
@@ -72,5 +73,20 @@ export async function registerApiRoutes(app: FastifyInstance): Promise<void> {
       return { message: "Source not found" };
     }
     return source;
+  });
+
+  app.get("/api/favicons/:domain", async (request, reply) => {
+    const params = z.object({ domain: z.string().min(1).max(255) }).parse(request.params);
+    const query = z.object({ refresh: z.coerce.boolean().optional() }).parse(request.query);
+    const favicon = await getCachedFavicon(params.domain, { forceRefresh: query.refresh ?? false });
+
+    if (!favicon) {
+      reply.code(404);
+      return { message: `Favicon not found for domain: ${params.domain}` };
+    }
+
+    reply.header("Cache-Control", "public, max-age=31536000, immutable");
+    reply.type(favicon.contentType);
+    return reply.send(favicon.buffer);
   });
 }

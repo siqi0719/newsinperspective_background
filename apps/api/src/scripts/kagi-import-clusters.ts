@@ -26,6 +26,7 @@ interface ExportedClusterFile {
   generatedAt?: string | undefined;
   chosenCluster: {
     storyId: string;
+    clusterNumber?: number | undefined;
     title: string;
     categoryName?: string | undefined;
     shortSummary?: string | undefined;
@@ -225,8 +226,8 @@ async function main() {
         update: {
           originalUrl,
           title: source.title,
-          summary: source.fullText ?? null,
-          contentSnippet: source.fullText?.slice(0, 280) ?? null,
+          summary: null,
+          contentSnippet: null,
           fullText: source.fullText ?? null,
           fullTextFormat: source.extractionFormat ?? null,
           extractionStatus,
@@ -243,8 +244,8 @@ async function main() {
           originalUrl,
           textFingerprint: null,
           title: source.title,
-          summary: source.fullText ?? null,
-          contentSnippet: source.fullText?.slice(0, 280) ?? null,
+          summary: null,
+          contentSnippet: null,
           fullText: source.fullText ?? null,
           fullTextFormat: source.extractionFormat ?? null,
           extractionStatus,
@@ -349,6 +350,7 @@ async function main() {
             keywordSource: clusterKeywordResult.source,
             keywordModel: clusterKeywordResult.model,
             keywordError: clusterKeywordResult.error,
+            kagiClusterNumber: payload.chosenCluster.clusterNumber ?? null,
           }),
         },
       });
@@ -362,6 +364,7 @@ async function main() {
             keywordSource: clusterKeywordResult.source,
             keywordModel: clusterKeywordResult.model,
             keywordError: clusterKeywordResult.error,
+            kagiClusterNumber: payload.chosenCluster.clusterNumber ?? null,
           }),
         },
       });

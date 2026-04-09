@@ -1,6 +1,7 @@
 import { ScopeType } from "@prisma/client";
 import type { SourceProfileDto, StoryComparison, StoryDetail, StoryFacetDto, StoryListItem } from "@news/shared";
 import { extractRegion } from "../domain/category.js";
+import { computeAuthorityStats, isGlobalTierDomain, scoreDomainAuthority } from "../domain/source-ranking.js";
 import { prisma } from "../lib/prisma.js";
 
 function toIsoDate(value: Date): string {
@@ -50,6 +51,56 @@ function uniqueDomains(article: { domain: string; duplicateDomains: string[] }):
   return [...new Set([article.domain, ...article.duplicateDomains])];
 }
 
+function buildTopDomainsForDisplay(
+  articles: Array<{ article: { domain: string; duplicateDomains: string[] } }>,
+  limit = 4,
+): string[] {
+  const domainCounts = new Map<string, number>();
+  for (const { article } of articles) {
+    for (const domain of uniqueDomains(article)) {
+      const key = domain.trim().toLowerCase();
+      if (!key) continue;
+      domainCounts.set(key, (domainCounts.get(key) ?? 0) + 1);
+    }
+  }
+
+  const ranked = [...domainCounts.entries()]
+    .map(([domain, count]) => ({
+      domain,
+      count,
+      authority: scoreDomainAuthority(domain),
+    }))
+    .sort((left, right) => {
+      if (right.authority !== left.authority) return right.authority - left.authority;
+      if (right.count !== left.count) return right.count - left.count;
+      return left.domain.localeCompare(right.domain);
+    });
+
+  const known = ranked.filter((item) => item.authority > 0);
+  const unknown = ranked.filter((item) => item.authority <= 0);
+  return [...known, ...unknown].slice(0, limit).map((item) => item.domain);
+}
+
+function safeDisplaySummary(article: {
+  summary: string | null;
+  contentSnippet: string | null;
+  fullText: string | null;
+}): string | null {
+  const summary = article.summary?.trim() ?? "";
+  const snippet = article.contentSnippet?.trim() ?? "";
+  const fullText = article.fullText?.trim() ?? "";
+
+  if (summary && summary !== fullText) {
+    return summary;
+  }
+
+  if (snippet && snippet !== fullText) {
+    return snippet;
+  }
+
+  return null;
+}
+
 function toIsoDateOrFallback(value: Date | null | undefined, fallback: Date): string {
   return toIsoDate(value ?? fallback);
 }
@@ -71,7 +122,7 @@ function getClusterDateRange(
 
 function englishTokenCount(value: string): number {
   const matches = value.toLowerCase().match(/\b[a-z]{2,}\b/g) ?? [];
-  return matches.filter((token) => GLOBAL_TIER_DOMAINS.has(token) === false).length;
+  return matches.filter((token) => isGlobalTierDomain(token) === false).length;
 }
 
 function nonAsciiLetterRatio(value: string): number {
@@ -100,21 +151,6 @@ function isLikelyEnglishStory(
   return foreignScriptRatio < 0.18 && (englishTokenScore >= 12 || keywordEnglishCount >= 3);
 }
 
-const GLOBAL_TIER_DOMAINS = new Set([
-  "apnews.com",
-  "bbc.com",
-  "bloomberg.com",
-  "cnbc.com",
-  "cnn.com",
-  "economist.com",
-  "ft.com",
-  "guardian.co.uk",
-  "nytimes.com",
-  "reuters.com",
-  "washingtonpost.com",
-  "wsj.com",
-]);
-
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
@@ -132,17 +168,26 @@ function computeImportanceScore(
   articles: Array<{ article: { domain: string; duplicateDomains: string[]; publishedAt: Date | null } }>,
   dateFrom: string,
   dateUntil: string,
+  authorityAverage: number,
+  authorityBest: number,
+  tierDomainCount: number,
+  sourceProfileTrustScore: number,
+  kagiClusterNumber: number | null,
 ): number {
   const uniqueDomainCount = new Set(articles.flatMap(({ article }) => uniqueDomains(article))).size;
-  const tierDomainCount = new Set(
-    articles
-      .map(({ article }) => article.domain)
-      .filter((domain) => GLOBAL_TIER_DOMAINS.has(domain)),
-  ).size;
   const latestPublishedAt = articles
     .map(({ article }) => article.publishedAt)
     .filter((value): value is Date => value instanceof Date)
     .sort((left, right) => right.getTime() - left.getTime())[0] ?? storyDate;
+  const domainFrequency = new Map<string, number>();
+  for (const { article } of articles) {
+    const domain = article.domain.trim().toLowerCase();
+    domainFrequency.set(domain, (domainFrequency.get(domain) ?? 0) + 1);
+  }
+  const dominantDomainShare =
+    articleCount > 0
+      ? [...domainFrequency.values()].reduce((current, count) => Math.max(current, count), 0) / articleCount
+      : 0;
 
   const storyDayEnd = new Date(storyDate);
   storyDayEnd.setUTCHours(23, 59, 59, 999);
@@ -154,18 +199,41 @@ function computeImportanceScore(
   const freshnessScore = clamp01(1 - freshnessHours / 30);
   const persistenceScore = clamp01(differenceInDays(dateFrom, dateUntil) / 3);
   const breadthScore = clamp01(Math.log1p(sourceCount) / Math.log(20));
+  const concentrationPenalty = clamp01((dominantDomainShare - 0.35) / 0.65);
+  const kagiRankScore =
+    typeof kagiClusterNumber === "number" && Number.isFinite(kagiClusterNumber)
+      ? clamp01(1 - (Math.max(1, kagiClusterNumber) - 1) / 20)
+      : 0.5;
 
-  return Number(
-    (
-      (tierScore * 0.3
-        + sourceDiversityScore * 0.25
-        + freshnessScore * 0.2
-        + volumeScore * 0.15
-        + persistenceScore * 0.05
-        + breadthScore * 0.05)
-      * 100
-    ).toFixed(1),
-  );
+  const rawScore =
+    authorityAverage * 0.18
+    + authorityBest * 0.08
+    + sourceProfileTrustScore * 0.12
+    + tierScore * 0.18
+    + sourceDiversityScore * 0.18
+    + freshnessScore * 0.12
+    + volumeScore * 0.08
+    + persistenceScore * 0.04
+    + breadthScore * 0.04
+    + kagiRankScore * 0.06
+    - concentrationPenalty * 0.08;
+
+  return Number((clamp01(rawScore) * 100).toFixed(1));
+}
+
+function scoreSourceProfileTrust(domains: string[], profileCountByDomain: Map<string, number>): number {
+  const uniqueDomainList = [...new Set(domains.map((domain) => domain.trim().toLowerCase()).filter(Boolean))];
+  if (uniqueDomainList.length === 0) return 0;
+
+  const score =
+    uniqueDomainList
+      .map((domain) => {
+        const count = profileCountByDomain.get(domain) ?? 0;
+        return clamp01(Math.log1p(count) / Math.log(120));
+      })
+      .reduce((sum, value) => sum + value, 0) / uniqueDomainList.length;
+
+  return Number(score.toFixed(3));
 }
 
 export async function listStoryFacets(date: string): Promise<StoryFacetDto> {
@@ -225,7 +293,6 @@ export async function listStoriesByDate(
   filters: StoryFilters = {},
   paging: StoryPaging = {},
 ): Promise<StoryListItem[]> {
-
   const rows = await prisma.storyCluster.findMany({
     where: buildStoryWhere(date, filters),
     include: {
@@ -246,9 +313,18 @@ export async function listStoriesByDate(
       },
     },
   });
+  const allDomains = [...new Set(rows.flatMap((row) => row.articles.flatMap((item) => uniqueDomains(item.article))))];
+  const profileRows = allDomains.length > 0
+    ? await prisma.sourceProfile.findMany({
+        where: { domain: { in: allDomains } },
+        select: { domain: true, articleCount: true },
+      })
+    : [];
+  const profileCountByDomain = new Map(profileRows.map((row) => [row.domain, row.articleCount]));
 
   const scoredRows = rows.map((row) => {
-    const topDomains = [...new Set(row.articles.flatMap((item) => uniqueDomains(item.article)))].slice(0, 4);
+    const clusterDomains = [...new Set(row.articles.flatMap((item) => uniqueDomains(item.article)))];
+    const topDomains = buildTopDomainsForDisplay(row.articles, 4);
     const articleKeywords = row.articles
       .flatMap((item) => item.article.features)
       .flatMap((feature) => {
@@ -257,11 +333,15 @@ export async function listStoriesByDate(
       })
       .filter((value, index, arr) => arr.indexOf(value) === index)
       .slice(0, 8);
-    const clusterFeature = row.features[0]?.featureSet as { keywords?: string[] } | undefined;
+    const clusterFeature = row.features[0]?.featureSet as { keywords?: string[]; kagiClusterNumber?: number } | undefined;
     const keywords =
       clusterFeature?.keywords && clusterFeature.keywords.length > 0
         ? clusterFeature.keywords.slice(0, 8)
         : articleKeywords;
+    const authorityStats = computeAuthorityStats(clusterDomains);
+    const sourceProfileTrustScore = scoreSourceProfileTrust(clusterDomains, profileCountByDomain);
+    const kagiClusterNumber =
+      typeof clusterFeature?.kagiClusterNumber === "number" ? clusterFeature.kagiClusterNumber : null;
     const { dateFrom, dateUntil } = getClusterDateRange(row.storyDate, row.articles);
     const importanceScore = computeImportanceScore(
       row.storyDate,
@@ -270,6 +350,11 @@ export async function listStoriesByDate(
       row.articles,
       dateFrom,
       dateUntil,
+      authorityStats.average,
+      authorityStats.best,
+      authorityStats.globalTierCount,
+      sourceProfileTrustScore,
+      kagiClusterNumber,
     );
 
     return {
@@ -334,8 +419,37 @@ export async function getStoryDetail(id: string): Promise<StoryDetail | null> {
   });
 
   if (!row) return null;
+  const clusterDomains = [...new Set(row.articles.flatMap((item) => uniqueDomains(item.article)))];
+  const profileRows = clusterDomains.length > 0
+    ? await prisma.sourceProfile.findMany({
+        where: { domain: { in: clusterDomains } },
+        select: { domain: true, articleCount: true },
+      })
+    : [];
+  const profileCountByDomain = new Map(profileRows.map((item) => [item.domain, item.articleCount]));
+  const topDomainsForDisplay = buildTopDomainsForDisplay(row.articles, 4);
+  const topDomainRank = new Map(topDomainsForDisplay.map((domain, index) => [domain, index]));
 
-  const articles = row.articles.map(({ article }) => {
+  const sortedRows = [...row.articles].sort((left, right) => {
+    const leftDomain = left.article.domain.trim().toLowerCase();
+    const rightDomain = right.article.domain.trim().toLowerCase();
+    const leftRank = topDomainRank.get(leftDomain) ?? Number.POSITIVE_INFINITY;
+    const rightRank = topDomainRank.get(rightDomain) ?? Number.POSITIVE_INFINITY;
+
+    if (leftRank !== rightRank) return leftRank - rightRank;
+
+    const leftAuthority = scoreDomainAuthority(leftDomain);
+    const rightAuthority = scoreDomainAuthority(rightDomain);
+    if (rightAuthority !== leftAuthority) return rightAuthority - leftAuthority;
+
+    const leftPublishedAt = left.article.publishedAt?.getTime() ?? 0;
+    const rightPublishedAt = right.article.publishedAt?.getTime() ?? 0;
+    if (rightPublishedAt !== leftPublishedAt) return rightPublishedAt - leftPublishedAt;
+
+    return left.article.title.localeCompare(right.article.title);
+  });
+
+  const articles = sortedRows.map(({ article }) => {
     const feature = article.features[0]?.featureSet as
       | { keywords?: string[]; sentiment?: number; subjectivity?: number; biasSignals?: string[] }
       | undefined;
@@ -348,9 +462,13 @@ export async function getStoryDetail(id: string): Promise<StoryDetail | null> {
       syndicatedDomains: article.duplicateDomains,
       sourceName: article.sourceName,
       publishedAt: article.publishedAt?.toISOString() ?? new Date().toISOString(),
-      summary: article.summary,
-      contentSnippet: article.contentSnippet,
-      fullText: article.fullText,
+      summary: safeDisplaySummary({
+        summary: article.summary,
+        contentSnippet: article.contentSnippet,
+        fullText: article.fullText,
+      }),
+      contentSnippet: null,
+      fullText: null,
       extractionStatus: article.extractionStatus,
       keywords: feature?.keywords ?? [],
       sentiment: feature?.sentiment ?? 0,
@@ -359,12 +477,16 @@ export async function getStoryDetail(id: string): Promise<StoryDetail | null> {
     };
   });
   const { dateFrom, dateUntil } = getClusterDateRange(row.storyDate, row.articles);
-  const clusterFeature = row.features[0]?.featureSet as { keywords?: string[] } | undefined;
+  const clusterFeature = row.features[0]?.featureSet as { keywords?: string[]; kagiClusterNumber?: number } | undefined;
   const articleKeywords = [...new Set(articles.flatMap((article) => article.keywords))].slice(0, 8);
   const detailKeywords =
     clusterFeature?.keywords && clusterFeature.keywords.length > 0
       ? clusterFeature.keywords.slice(0, 8)
       : articleKeywords;
+  const authorityStats = computeAuthorityStats(clusterDomains);
+  const sourceProfileTrustScore = scoreSourceProfileTrust(clusterDomains, profileCountByDomain);
+  const kagiClusterNumber =
+    typeof clusterFeature?.kagiClusterNumber === "number" ? clusterFeature.kagiClusterNumber : null;
   const importanceScore = computeImportanceScore(
     row.storyDate,
     row.articleCount,
@@ -372,6 +494,11 @@ export async function getStoryDetail(id: string): Promise<StoryDetail | null> {
     row.articles,
     dateFrom,
     dateUntil,
+    authorityStats.average,
+    authorityStats.best,
+    authorityStats.globalTierCount,
+    sourceProfileTrustScore,
+    kagiClusterNumber,
   );
 
   return {
@@ -385,7 +512,7 @@ export async function getStoryDetail(id: string): Promise<StoryDetail | null> {
     category: row.topCategory,
     articleCount: row.articleCount,
     sourceCount: row.sourceCount,
-    topDomains: [...new Set(articles.flatMap((article) => [article.domain, ...article.syndicatedDomains]))].slice(0, 4),
+    topDomains: topDomainsForDisplay,
     keywords: detailKeywords,
     articles,
   };
@@ -413,9 +540,7 @@ export async function getStoryComparison(id: string): Promise<StoryComparison | 
   }));
 
   const framingSummary = [
-    `Coverage spans ${detail.sourceCount} sources across ${detail.topDomains.join(", ")}.`,
-    `Shared focus terms: ${sharedKeywords.join(", ") || "none"}.`,
-    `Bias signals observed: ${[...new Set(articleComparisons.flatMap((item) => item.biasSignals))].join(", ") || "none"}.`,
+    "Bias signals observed: <not yet determined>.",
   ];
 
   return {

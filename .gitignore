@@ -19,7 +19,8 @@ coverage/
 
 # Runtime data and logs
 logs/
-apps/api/data/
+apps/api/data/*
+!apps/api/data/domain_pc1.csv
 apps/api/notebooks/
 
 # Python and notebook artifacts
