@@ -1,11 +1,23 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { closeArticleExtractionBrowser, extractArticleTextFromUrl } from "../services/article-text.js";
-import { closeKagiBrowser, listTopClustersBySourceCount } from "../services/kagi-news.js";
+import {
+  KagiCategoryFetchProgress,
+  closeKagiBrowser,
+  listClustersForIngestion,
+} from "../services/kagi-news.js";
 
 function parsePositiveInt(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function parseCsv(value: string | undefined, fallback: string[]): string[] {
+  if (!value) return fallback;
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
 }
 
 function slugify(value: string): string {
@@ -16,38 +28,146 @@ function slugify(value: string): string {
     .slice(0, 80);
 }
 
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  if (hours > 0) return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function renderProgress(
+  label: string,
+  current: number,
+  total: number,
+  startedAt: number,
+  suffix = "",
+): void {
+  const boundedCurrent = Math.min(Math.max(current, 0), Math.max(total, 1));
+  const ratio = total > 0 ? boundedCurrent / total : 0;
+  const width = 24;
+  const filled = Math.round(width * ratio);
+  const bar = `${"=".repeat(Math.max(0, filled - 1))}${filled > 0 && filled < width ? ">" : "="}${".".repeat(Math.max(0, width - filled))}`;
+  const elapsedMs = Date.now() - startedAt;
+  const elapsedSeconds = elapsedMs / 1000;
+  const rate = elapsedSeconds > 0 ? boundedCurrent / elapsedSeconds : 0;
+  const remaining = Math.max(0, total - boundedCurrent);
+  const etaMs = rate > 0 ? (remaining / rate) * 1000 : 0;
+  const line =
+    `${label.padEnd(16)} ${String(boundedCurrent).padStart(3)}/${String(total).padEnd(3)} ` +
+    `[${bar}] ${formatDuration(elapsedMs)}<${formatDuration(etaMs)} ` +
+    `${rate.toFixed(2)}/s ${suffix}`.trimEnd();
+
+  if (process.stdout.isTTY) {
+    process.stdout.write(`\r${line.padEnd(160)}`);
+  } else if (boundedCurrent === total || boundedCurrent === 1 || boundedCurrent % 5 === 0) {
+    console.log(line);
+  }
+}
+
+function finishProgressLine(): void {
+  if (process.stdout.isTTY) {
+    process.stdout.write("\n");
+  }
+}
+
+function renderCategoryProgress(progress: KagiCategoryFetchProgress, startedAt: number): void {
+  if (progress.status === "start") {
+    if (!process.stdout.isTTY) {
+      console.log(`categories: ${progress.current}/${progress.total} ${progress.categoryName}`);
+    }
+    return;
+  }
+
+  const suffix =
+    progress.status === "done"
+      ? `${progress.categoryName} (${progress.storyCount ?? 0} stories)`
+      : `${progress.categoryName} (error)`;
+  renderProgress("categories", progress.current, progress.total, startedAt, suffix);
+  if (progress.current >= progress.total) {
+    finishProgressLine();
+  }
+}
+
 async function main() {
-  const exportCount = parsePositiveInt(process.argv[2], 20);
-  const offset = parsePositiveInt(process.argv[3], 0) - 1;
-  const normalizedOffset = Math.max(0, offset);
-  const topLimit = Math.max(
-    exportCount + normalizedOffset,
-    parsePositiveInt(process.argv[4], exportCount + normalizedOffset),
-  );
-  const clusters = await listTopClustersBySourceCount(topLimit);
-  const selected = clusters.slice(normalizedOffset, normalizedOffset + exportCount);
+  const globalLimit = parsePositiveInt(process.argv[2], 10);
+  const perCategoryLimit = parsePositiveInt(process.argv[3], 5);
+  const requiredCategories = parseCsv(process.argv[4], [
+    "World",
+    "USA",
+    "Business",
+    "Technology",
+    "Sports",
+    "Science",
+    "Gaming",
+  ]);
+
+  console.log("Selecting clusters from Kagi...");
+  const categoryProgressStartedAt = Date.now();
+  const selection = await listClustersForIngestion({
+    globalLimit,
+    perCategoryLimit,
+    requiredCategories,
+    onStageMessage: (message) => {
+      console.log(message);
+    },
+    onCategoryFetchProgress: (progress) => {
+      renderCategoryProgress(progress, categoryProgressStartedAt);
+    },
+  });
+  const selected = selection.clusters;
 
   if (selected.length === 0) {
     throw new Error("No clusters returned from Kagi API");
+  }
+
+  const missingCoverage = selection.coverage.filter((item) => item.selectedCount === 0);
+  if (missingCoverage.length > 0) {
+    console.log(
+      `Coverage warnings: ${missingCoverage
+        .map((item) => `${item.requestedCategory}${item.matchedCategory ? `->${item.matchedCategory}` : ""}`)
+        .join(", ")}`,
+    );
   }
 
   const baseDir = resolve(process.cwd(), "notebooks", "exports", "kagi-top", new Date().toISOString().slice(0, 10));
   await mkdir(baseDir, { recursive: true });
 
   const results = [];
+  const clusterProgressStartedAt = Date.now();
 
   for (const [index, chosen] of selected.entries()) {
+    console.log("");
+    console.log(`[cluster ${index + 1}/${selected.length}] ${chosen.categoryName} · ${chosen.story.title}`);
     const exportDir = resolve(
       baseDir,
-      `${normalizedOffset + index + 1}-${slugify(chosen.story.title)}`,
+      `${index + 1}-${slugify(chosen.story.title)}`,
     );
     await mkdir(exportDir, { recursive: true });
 
+    const sourceProgressStartedAt = Date.now();
+    let sourceDone = 0;
+    let sourceSuccess = 0;
+    let sourceFailed = 0;
     const sources = await Promise.all(
       chosen.story.articles.map(async (article) => {
+        let result: {
+          title: string;
+          link: string;
+          domain: string;
+          date?: string | undefined;
+          originalUrl: string;
+          finalUrl: string;
+          extractionStatus: "SUCCESS" | "FAILED";
+          extractionError: string | null;
+          fullText: string | null;
+          fullTextLength: number;
+          extractionFormat: string | null;
+        };
         try {
           const extracted = await extractArticleTextFromUrl(article.link);
-          return {
+          result = {
             ...article,
             originalUrl: extracted.originalUrl,
             finalUrl: extracted.finalUrl,
@@ -57,8 +177,9 @@ async function main() {
             fullTextLength: extracted.text.length,
             extractionFormat: extracted.format,
           };
+          sourceSuccess += 1;
         } catch (error) {
-          return {
+          result = {
             ...article,
             originalUrl: article.link,
             finalUrl: article.link,
@@ -68,17 +189,36 @@ async function main() {
             fullTextLength: 0,
             extractionFormat: null,
           };
+          sourceFailed += 1;
         }
+
+        sourceDone += 1;
+        renderProgress(
+          `sources ${index + 1}/${selected.length}`,
+          sourceDone,
+          chosen.story.articles.length,
+          sourceProgressStartedAt,
+          `ok ${sourceSuccess} fail ${sourceFailed}`,
+        );
+        if (sourceDone === chosen.story.articles.length) {
+          finishProgressLine();
+        }
+        return result;
       }),
     );
 
     const payload = {
       generatedAt: new Date().toISOString(),
-      topLimit,
-      rank: normalizedOffset + index + 1,
+      selection: {
+        globalLimit,
+        perCategoryLimit,
+        requiredCategories,
+      },
+      rank: index + 1,
       chosenCluster: {
         batchId: chosen.batchId,
         categoryId: chosen.categoryId,
+        categoryUuid: chosen.categoryUuid,
         categoryName: chosen.categoryName,
         storyId: chosen.story.id,
         clusterNumber: chosen.story.cluster_number,
@@ -106,6 +246,11 @@ async function main() {
       successfulExtractions: sources.filter((item) => item.extractionStatus === "SUCCESS").length,
       failedExtractions: sources.filter((item) => item.extractionStatus === "FAILED").length,
     });
+
+    renderProgress("clusters", index + 1, selected.length, clusterProgressStartedAt, chosen.categoryName);
+    if (index + 1 === selected.length) {
+      finishProgressLine();
+    }
   }
 
   console.log(
@@ -113,8 +258,10 @@ async function main() {
       {
         generatedAt: new Date().toISOString(),
         exportCount: selected.length,
-        offset: normalizedOffset,
-        topLimit,
+        globalLimit,
+        perCategoryLimit,
+        requiredCategories,
+        coverage: selection.coverage,
         baseDir,
         results,
       },

@@ -6,6 +6,8 @@
   "scripts": {
     "api:start": "pnpm --filter @news/api start",
     "build": "turbo run build",
+    "compare:keywords": "pnpm --filter @news/api compare:keywords",
+    "retry:openrouter-keywords": "pnpm --filter @news/api retry:openrouter-keywords",
     "db:start": "docker compose up -d postgres",
     "dev": "turbo run dev",
     "drive:pull": "bash scripts/google-drive/pull.sh",
@@ -17,6 +19,7 @@
     "export:notebook": "python3 notebooks/src/export_news_slice.py",
     "ingest": "pnpm --filter @news/api ingest",
     "kagi:export-clusters": "pnpm --filter @news/api kagi:export-clusters",
+    "kagi:import-clusters": "pnpm --filter @news/api kagi:import-clusters",
     "kagi:backfill-redirects": "pnpm --filter @news/api kagi:backfill-redirects",
     "kagi:repair-failures": "pnpm --filter @news/api kagi:repair-failures",
     "kagi:random-cluster": "pnpm --filter @news/api kagi:random-cluster",

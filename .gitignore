@@ -31,3 +31,4 @@ __pycache__/
 
 # OS/editor noise
 .DS_Store
+.playwright-cli/*

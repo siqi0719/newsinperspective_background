@@ -19,6 +19,8 @@ export async function registerApiRoutes(app: FastifyInstance): Promise<void> {
       date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
       category: z.string().optional(),
       region: z.string().optional(),
+      offset: z.coerce.number().int().min(0).optional(),
+      limit: z.coerce.number().int().min(1).max(50).optional(),
     });
     const query = querySchema.parse(request.query);
     const filters =
@@ -28,7 +30,10 @@ export async function registerApiRoutes(app: FastifyInstance): Promise<void> {
             region: query.region,
           }
         : undefined;
-    return listStoriesByDate(query.date, filters);
+    return listStoriesByDate(query.date, filters, {
+      offset: query.offset,
+      limit: query.limit,
+    });
   });
 
   app.get("/api/facets", async (request) => {

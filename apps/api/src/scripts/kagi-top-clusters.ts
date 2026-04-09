@@ -18,6 +18,7 @@ async function main() {
           rank: index + 1,
           batchId: item.batchId,
           categoryId: item.categoryId,
+          categoryUuid: item.categoryUuid,
           categoryName: item.categoryName,
           storyId: item.story.id,
           clusterNumber: item.story.cluster_number,

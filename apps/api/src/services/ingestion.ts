@@ -1,11 +1,12 @@
 import { Prisma, RunStatus, ScopeType } from "@prisma/client";
+import { ArticleFeatureSet } from "../domain/types.js";
 import { extractRegion } from "../domain/category.js";
 import { env } from "../config/env.js";
 import { createFileLogger } from "../lib/file-logger.js";
 import { prisma } from "../lib/prisma.js";
 import { clusterArticles } from "./clustering.js";
 import { fetchFeedCatalog } from "./feed-catalog.js";
-import { buildArticleFeatures } from "./nlp.js";
+import { buildArticleFeatures, buildClusterKeywordsWithOpenRouter } from "./nlp.js";
 import { fetchFeedEntries } from "./rss-ingest.js";
 
 function startOfDay(date: string): Date {
@@ -143,6 +144,7 @@ export async function runIngestion(date: string): Promise<{ runId: string; statu
   let selectedFeeds: Array<{ url: string; category: string | null; sourceName: string | null }> = [];
   let articles: Awaited<ReturnType<typeof prisma.article.findMany>> = [];
   let clusters: Array<{ key: string; title: string; category: string | null; articleIds: string[] }> = [];
+  const articleFeatureById = new Map<string, ArticleFeatureSet>();
   let finalStatus: RunStatus = RunStatus.FAILED;
   let fatalError: Error | null = null;
 
@@ -213,6 +215,7 @@ export async function runIngestion(date: string): Promise<{ runId: string; statu
             saved.contentSnippet,
             saved.language,
           );
+          articleFeatureById.set(saved.id, featureSet);
 
           await prisma.nlpFeature.upsert({
             where: {
@@ -314,19 +317,25 @@ export async function runIngestion(date: string): Promise<{ runId: string; statu
         })),
       });
 
-      const clusterKeywords = [
+      const clusterArticlesForKeywords = articles.filter((article) =>
+        cluster.articleIds.includes(article.id),
+      );
+      const localClusterKeywords = [
         ...new Set(
-          await Promise.all(
-            cluster.articleIds.map(async (articleId) => {
-              const feature = await prisma.nlpFeature.findFirst({
-                where: { articleId, scopeType: ScopeType.ARTICLE },
-              });
-              const payload = feature?.featureSet as { keywords?: string[] } | undefined;
-              return payload?.keywords ?? [];
-            }),
-          ).then((groups) => groups.flat()),
+          cluster.articleIds.flatMap((articleId) => articleFeatureById.get(articleId)?.keywords ?? []),
         ),
       ].slice(0, 8);
+
+      const clusterKeywordResult = await buildClusterKeywordsWithOpenRouter(
+        cluster.title,
+        clusterArticlesForKeywords.map((article) => ({
+          title: article.title,
+          summary: article.summary,
+          body: article.fullText ?? article.contentSnippet,
+          language: article.language,
+        })),
+        localClusterKeywords,
+      );
 
       await prisma.nlpFeature.create({
         data: {
@@ -334,7 +343,10 @@ export async function runIngestion(date: string): Promise<{ runId: string; statu
           clusterId: created.id,
           featureSet: toInputJson({
             order: index,
-            keywords: clusterKeywords,
+            keywords: clusterKeywordResult.keywords,
+            keywordSource: clusterKeywordResult.source,
+            keywordModel: clusterKeywordResult.model,
+            keywordError: clusterKeywordResult.error,
           }),
         },
       });

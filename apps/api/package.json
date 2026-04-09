@@ -5,10 +5,13 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "compare:keywords": "tsx src/scripts/compare-keywords.ts",
+    "retry:openrouter-keywords": "tsx src/scripts/retry-openrouter-keywords.ts",
     "dev": "tsx watch src/index.ts",
     "enrich:status": "tsx src/scripts/enrich-status.ts",
     "enrich:text": "tsx src/scripts/enrich-text.ts",
     "ingest": "tsx src/scripts/ingest.ts",
+    "kagi:import-clusters": "tsx src/scripts/kagi-import-clusters.ts",
     "kagi:export-clusters": "tsx src/scripts/kagi-export-clusters.ts",
     "kagi:backfill-redirects": "tsx src/scripts/kagi-backfill-redirects.ts",
     "kagi:repair-failures": "tsx src/scripts/kagi-repair-failures.ts",

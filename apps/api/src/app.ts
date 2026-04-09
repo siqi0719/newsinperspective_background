@@ -18,7 +18,8 @@ export async function buildApp() {
 
       const allowedOrigins = new Set([env.WEB_ORIGIN]);
       const isLocalViteOrigin = /^http:\/\/localhost:53\d{2}$/.test(origin);
-      callback(null, allowedOrigins.has(origin) || isLocalViteOrigin);
+      const isLoopbackViteOrigin = /^http:\/\/127\.0\.0\.1:53\d{2}$/.test(origin);
+      callback(null, allowedOrigins.has(origin) || isLocalViteOrigin || isLoopbackViteOrigin);
     },
   });
 

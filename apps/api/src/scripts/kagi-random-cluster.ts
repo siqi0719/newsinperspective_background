@@ -70,6 +70,7 @@ async function main() {
     chosenCluster: {
       batchId: chosen.batchId,
       categoryId: chosen.categoryId,
+      categoryUuid: chosen.categoryUuid,
       categoryName: chosen.categoryName,
       storyId: chosen.story.id,
       clusterNumber: chosen.story.cluster_number,

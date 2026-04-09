@@ -35,6 +35,8 @@ const envSchema = z.object({
     .default("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"),
   ARTICLE_BROWSER_TIMEOUT_MS: z.coerce.number().default(30000),
   INGEST_FEED_LIMIT: z.coerce.number().optional(),
+  OPENROUTER_API_KEY: z.string().optional(),
+  OPENROUTER_MODEL: z.string().optional(),
 });
 
 export const env = envSchema.parse(process.env);

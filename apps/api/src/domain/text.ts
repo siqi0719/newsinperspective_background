@@ -67,20 +67,29 @@ const stopWordsByLanguage: Record<string, Set<string>> = {
     "zur",
   ]),
   fr: new Set([
+    "a",
     "alors",
     "au",
     "aux",
+    "autres",
     "avec",
     "ce",
+    "cette",
     "ces",
     "dans",
     "de",
     "des",
     "du",
     "elle",
+    "est",
+    "ete",
+    "été",
+    "etre",
+    "être",
     "en",
     "et",
     "il",
+    "ils",
     "je",
     "la",
     "le",
@@ -88,14 +97,22 @@ const stopWordsByLanguage: Record<string, Set<string>> = {
     "leur",
     "mais",
     "ne",
+    "ont",
     "pas",
+    "par",
+    "plus",
     "pour",
     "que",
     "qui",
+    "sa",
     "se",
     "ses",
+    "son",
+    "sont",
     "sur",
+    "un",
     "une",
+    "vous",
   ]),
   es: new Set([
     "a",
@@ -106,19 +123,106 @@ const stopWordsByLanguage: Record<string, Set<string>> = {
     "el",
     "en",
     "es",
+    "ha",
+    "han",
     "la",
     "las",
+    "lo",
     "los",
+    "mas",
+    "más",
     "para",
     "por",
     "que",
     "se",
+    "su",
     "sus",
     "un",
     "una",
     "y",
   ]),
+  it: new Set([
+    "a",
+    "al",
+    "anche",
+    "che",
+    "con",
+    "da",
+    "de",
+    "del",
+    "della",
+    "di",
+    "e",
+    "ha",
+    "i",
+    "il",
+    "in",
+    "la",
+    "le",
+    "gli",
+    "ma",
+    "nel",
+    "non",
+    "per",
+    "si",
+    "su",
+    "tra",
+    "un",
+    "una",
+  ]),
+  tr: new Set([
+    "ama",
+    "ancak",
+    "bu",
+    "da",
+    "de",
+    "daha",
+    "en",
+    "gibi",
+    "hem",
+    "için",
+    "ile",
+    "kadar",
+    "mi",
+    "mı",
+    "mu",
+    "mü",
+    "ne",
+    "o",
+    "olan",
+    "olarak",
+    "ve",
+    "ya",
+    "ya da",
+  ]),
+  el: new Set([
+    "από",
+    "για",
+    "δεν",
+    "ή",
+    "η",
+    "θα",
+    "και",
+    "με",
+    "να",
+    "ο",
+    "οι",
+    "σε",
+    "στη",
+    "στην",
+    "στο",
+    "την",
+    "της",
+    "το",
+    "τον",
+    "του",
+    "των",
+  ]),
 };
+
+const combinedStopWords = new Set(
+  Object.values(stopWordsByLanguage).flatMap((words) => [...words]),
+);
 
 const positiveWords = ["gain", "growth", "improve", "success", "win", "benefit"];
 const negativeWords = ["crisis", "decline", "fail", "loss", "war", "attack", "risk"];
@@ -137,16 +241,52 @@ export function normalizeLanguage(language: string | null | undefined): string {
 }
 
 function getStopWords(language: string | null | undefined): Set<string> {
-  return stopWordsByLanguage[normalizeLanguage(language)] ?? englishStopWords;
+  if (!language || !language.trim()) {
+    return combinedStopWords;
+  }
+
+  return stopWordsByLanguage[normalizeLanguage(language)] ?? combinedStopWords;
 }
 
-export function tokenize(value: string, language?: string | null): string[] {
-  const stopWords = getStopWords(language);
+function tokenizeRaw(value: string): string[] {
   return normalizeWhitespace(value)
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .split(/\s+/)
-    .filter((token) => token && !stopWords.has(token));
+    .filter(Boolean);
+}
+
+export function detectLanguageFromText(...parts: Array<string | null | undefined>): string | null {
+  const text = parts.filter(Boolean).join(" ");
+  if (!text.trim()) return null;
+
+  const tokens = tokenizeRaw(text);
+  if (tokens.length < 8) return null;
+
+  const scores = Object.entries(stopWordsByLanguage).map(([language, words]) => ({
+    language,
+    score: tokens.reduce((sum, token) => (words.has(token) ? sum + 1 : sum), 0),
+  }));
+
+  scores.sort((left, right) => right.score - left.score);
+  const top = scores[0];
+  const second = scores[1]?.score ?? 0;
+
+  if (!top) return null;
+  const scoreShare = top.score / tokens.length;
+  if (top.score < 3 || scoreShare < 0.08) return null;
+  if (top.score === second) return null;
+
+  return top.language;
+}
+
+export function tokenize(value: string, language?: string | null): string[] {
+  const stopWords = getStopWords(language);
+  return tokenizeRaw(value).filter((token) => {
+    if (token.length <= 2) return false;
+    if (/^\d+$/u.test(token)) return false;
+    return !stopWords.has(token);
+  });
 }
 
 export function extractKeywords(language: string | null | undefined, ...parts: Array<string | null | undefined>): string[] {

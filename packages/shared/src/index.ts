@@ -16,6 +16,9 @@ export const articleComparisonSchema = z.object({
 export const storyListItemSchema = z.object({
   id: z.string(),
   date: isoDateSchema,
+  dateFrom: isoDateSchema,
+  dateUntil: isoDateSchema,
+  importanceScore: z.number(),
   title: z.string(),
   region: z.string().nullable(),
   category: z.string().nullable(),
@@ -38,7 +41,7 @@ export const storyDetailSchema = storyListItemSchema.extend({
       summary: z.string().nullable(),
       contentSnippet: z.string().nullable(),
       fullText: z.string().nullable(),
-      textExtractionStatus: z.enum(["PENDING", "SUCCESS", "FAILED"]),
+      extractionStatus: z.enum(["PENDING", "SUCCESS", "FAILED"]),
       keywords: z.array(z.string()),
       sentiment: z.number(),
       subjectivity: z.number(),
@@ -50,6 +53,8 @@ export const storyDetailSchema = storyListItemSchema.extend({
 export const storyComparisonSchema = z.object({
   storyId: z.string(),
   date: isoDateSchema,
+  dateFrom: isoDateSchema,
+  dateUntil: isoDateSchema,
   title: z.string(),
   sharedKeywords: z.array(z.string()),
   commonEntities: z.array(z.string()),

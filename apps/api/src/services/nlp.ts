@@ -1,12 +1,13 @@
 import { ArticleFeatureSet } from "../domain/types.js";
 import {
+  detectLanguageFromText,
   detectBiasSignals,
-  extractEntities,
   extractKeywords,
-  normalizeLanguage,
+  extractEntities,
   scoreSentiment,
   scoreSubjectivity,
 } from "../domain/text.js";
+import { extractKeywordsWithOpenRouter } from "./openrouter-keywords.js";
 
 export function buildArticleFeatures(
   title: string,
@@ -14,13 +15,88 @@ export function buildArticleFeatures(
   body: string | null,
   language: string | null,
 ): ArticleFeatureSet {
-  const normalizedLanguage = normalizeLanguage(language);
+  const detectedLanguage = language ?? detectLanguageFromText(title, summary, body);
+  // When language inference is unknown, downstream tokenization uses a combined stopword set.
+  const analysisLanguage = detectedLanguage ?? null;
   return {
-    keywords: extractKeywords(normalizedLanguage, title, summary, body),
+    keywords: extractKeywords(analysisLanguage, title, summary, body),
     entities: extractEntities(title, summary, body),
-    sentiment: scoreSentiment(normalizedLanguage, title, summary, body),
-    subjectivity: scoreSubjectivity(normalizedLanguage, title, summary, body),
+    sentiment: scoreSentiment(analysisLanguage, title, summary, body),
+    subjectivity: scoreSubjectivity(analysisLanguage, title, summary, body),
     biasSignals: detectBiasSignals(title, summary, body),
-    language: language,
+    language: detectedLanguage,
+  };
+}
+
+interface ClusterKeywordArticle {
+  title: string;
+  summary: string | null;
+  body: string | null;
+  language: string | null;
+}
+
+interface ClusterKeywordResult {
+  keywords: string[];
+  source: "openrouter" | "local";
+  model: string | null;
+  error: string | null;
+}
+
+function joinText(parts: Array<string | null | undefined>, maxLength: number): string {
+  const text = parts.filter((value): value is string => Boolean(value)).join("\n\n");
+  return text.slice(0, maxLength);
+}
+
+function pickLanguage(values: Array<string | null | undefined>): string | null {
+  const histogram = new Map<string, number>();
+  for (const value of values) {
+    if (!value) continue;
+    histogram.set(value, (histogram.get(value) ?? 0) + 1);
+  }
+  const sorted = [...histogram.entries()].sort((left, right) => right[1] - left[1]);
+  return sorted[0]?.[0] ?? null;
+}
+
+function unique(values: string[]): string[] {
+  return [...new Set(values)];
+}
+
+export async function buildClusterKeywordsWithOpenRouter(
+  clusterTitle: string,
+  articles: ClusterKeywordArticle[],
+  fallbackKeywords: string[],
+): Promise<ClusterKeywordResult> {
+  const topArticles = articles.slice(0, 6);
+  const language = pickLanguage(topArticles.map((article) => article.language));
+  const summary = joinText(topArticles.map((article) => article.summary), 3000);
+  const body = joinText(topArticles.map((article) => article.body), 6000);
+  const localKeywords = unique(
+    fallbackKeywords.length > 0
+      ? fallbackKeywords
+      : extractKeywords(language, clusterTitle, summary, body),
+  ).slice(0, 8);
+
+  const openrouter = await extractKeywordsWithOpenRouter({
+    title: clusterTitle,
+    summary,
+    body,
+    language,
+    maxKeywords: 8,
+  });
+
+  if (!openrouter.error && openrouter.keywords.length > 0) {
+    return {
+      keywords: openrouter.keywords,
+      source: "openrouter",
+      model: openrouter.model,
+      error: null,
+    };
+  }
+
+  return {
+    keywords: localKeywords,
+    source: "local",
+    model: openrouter.model,
+    error: openrouter.error,
   };
 }
