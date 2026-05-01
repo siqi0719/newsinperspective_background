@@ -1,7 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
-import { Browser, chromium } from "playwright";
 
 export interface KagiBatchCategoriesResponse {
   batchId: string;
@@ -10,6 +9,7 @@ export interface KagiBatchCategoriesResponse {
     id: string;
     categoryId: string;
     categoryName: string;
+    sourceLanguage: string;
     readCount: number;
     clusterCount: number;
   }>;
@@ -42,7 +42,6 @@ interface KagiStoriesResponse {
 }
 
 const KAGI_API_BASE = "https://news.kagi.com/api";
-let kagiBrowserPromise: Promise<Browser> | null = null;
 const CACHE_DIR = resolve(process.cwd(), ".cache", "kagi-api");
 
 function sleep(ms: number): Promise<void> {
@@ -54,29 +53,8 @@ function cachePathFor(url: string): string {
   return resolve(CACHE_DIR, `${key}.json`);
 }
 
-async function getKagiBrowser(): Promise<Browser> {
-  if (!kagiBrowserPromise) {
-    kagiBrowserPromise = chromium
-      .launch({
-        headless: true,
-      })
-      .catch((error) => {
-        kagiBrowserPromise = null;
-        throw error;
-      });
-  }
-
-  return kagiBrowserPromise;
-}
-
 export async function closeKagiBrowser(): Promise<void> {
-  if (!kagiBrowserPromise) return;
-  try {
-    const browser = await kagiBrowserPromise;
-    await browser.close();
-  } finally {
-    kagiBrowserPromise = null;
-  }
+  // No-op since we're not using browser anymore
 }
 
 async function fetchJson<T>(path: string, options?: { forceRefresh?: boolean }): Promise<T> {
@@ -91,49 +69,45 @@ async function fetchJson<T>(path: string, options?: { forceRefresh?: boolean }):
     } catch {}
   }
 
-  const browser = await getKagiBrowser();
-  const context = await browser.newContext({
-    userAgent:
-      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
-  });
-  const page = await context.newPage();
+  let lastError: Error | null = null;
 
-  try {
-    let lastError: Error | null = null;
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        method: "GET",
+        headers: {
+          "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+        },
+        signal: AbortSignal.timeout(30000),
+      });
 
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      try {
-        await page.goto(url, {
-          waitUntil: "commit",
-          timeout: 30000,
-        });
-        const bodyText = await page.locator("body").textContent();
-        if (!bodyText) {
-          throw new Error(`Kagi API returned empty body for ${path}`);
-        }
+      if (!response.ok) {
+        throw new Error(`Kagi API returned status ${response.status} for ${path}`);
+      }
 
-        if (bodyText.startsWith("429 ")) {
-          throw new Error(`Kagi API rate limited request for ${path}: ${bodyText.slice(0, 80)}`);
-        }
+      const bodyText = await response.text();
+      if (!bodyText) {
+        throw new Error(`Kagi API returned empty body for ${path}`);
+      }
 
-        const parsed = JSON.parse(bodyText) as T;
-        await mkdir(CACHE_DIR, { recursive: true });
-        await writeFile(cachePath, JSON.stringify({ fetchedAt: Date.now(), bodyText }), "utf8");
-        return parsed;
-      } catch (error) {
-        lastError = error instanceof Error ? error : new Error(String(error));
-        if (attempt < 3) {
-          await sleep((attempt + 1) * 1500);
-          continue;
-        }
+      if (bodyText.startsWith("429 ")) {
+        throw new Error(`Kagi API rate limited request for ${path}: ${bodyText.slice(0, 80)}`);
+      }
+
+      const parsed = JSON.parse(bodyText) as T;
+      await mkdir(CACHE_DIR, { recursive: true });
+      await writeFile(cachePath, JSON.stringify({ fetchedAt: Date.now(), bodyText }), "utf8");
+      return parsed;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      if (attempt < 3) {
+        await sleep((attempt + 1) * 1500);
+        continue;
       }
     }
-
-    throw lastError ?? new Error(`Kagi API request failed for ${path}`);
-  } finally {
-    await page.close();
-    await context.close();
   }
+
+  throw lastError ?? new Error(`Kagi API request failed for ${path}`);
 }
 
 export async function fetchLatestCategories(

@@ -25,6 +25,13 @@ enum ExtractionStatus {
   FAILED
 }
 
+enum EntityType {
+  PERSON
+  GPE
+  ORG
+  EVENT
+}
+
 model FeedSource {
   id          String      @id @default(cuid())
   url         String      @unique
@@ -101,6 +108,7 @@ model Article {
   raws            ArticleRaw[]
   clusterLinks    ClusterArticle[]
   features        NlpFeature[]
+  entityMentions  EntityMention[]  // 该文章中识别的实体
 
   @@index([textFingerprint])
 }
@@ -165,3 +173,85 @@ model NlpFeature {
   article    Article?    @relation(fields: [articleId], references: [id], onDelete: Cascade)
   cluster    StoryCluster? @relation(fields: [clusterId], references: [id], onDelete: Cascade)
 }
+
+// ============================================================
+// 背景信息功能：命名实体识别和 Wikipedia 链接
+// ============================================================
+
+// 主实体表：存储识别的命名实体（人名、地名、组织、事件等）
+model NamedEntity {
+  id                String      @id @default(cuid())
+  name              String      @unique // 实体名称，唯一
+  type              EntityType  // PERSON, GPE, ORG, EVENT
+  wikiId            String?     @unique // Wikipedia 文章 ID
+  wikipediaUrl      String?     // Wikipedia 链接
+  wikidataId        String?     // Wikidata ID（提供结构化数据）
+  summary           String?     @db.Text // Wikipedia 摘要
+  imageUrl          String?     // 实体图片 URL
+  infoboxJson       Json?       // Wikipedia 信息框的结构化数据
+  firstSeen         DateTime    @default(now()) // 首次被识别的时间
+  lastUpdated       DateTime    @updatedAt // 最后更新时间
+
+  // 关系
+  mentions          EntityMention[]
+  statistics        EntityStatistics?
+  cooccurrence1     EntityCooccurrence[] @relation("entity1")
+  cooccurrence2     EntityCooccurrence[] @relation("entity2")
+
+  @@index([name]) // 为搜索优化
+  @@index([type]) // 为类型过滤优化
+}
+
+// 实体提及表：记录实体在文章中的具体位置
+model EntityMention {
+  id                String      @id @default(cuid())
+  entityId          String
+  entity            NamedEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  articleId         String
+  article           Article     @relation(fields: [articleId], references: [id], onDelete: Cascade)
+
+  startOffset       Int         // 实体在文本中的开始字符位置
+  endOffset         Int         // 实体在文本中的结束字符位置
+  context           String      // 周围 50 个字的上下文（用于展示）
+  confidence        Float?      // NER 模型的置信度 (0-1)
+
+  createdAt         DateTime    @default(now())
+
+  @@index([entityId])
+  @@index([articleId])
+  @@index([confidence]) // 为低置信度查询优化
+}
+
+// 实体统计表：缓存实体的统计数据（避免每次查询都重新计算）
+model EntityStatistics {
+  id                String      @id @default(cuid())
+  entityId          String      @unique
+  entity            NamedEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  totalMentions     Int         @default(0)     // 总提及次数
+  uniqueArticles    Int         @default(0)     // 包含该实体的文章数
+  mentions7Days     Int         @default(0)     // 过去 7 天的提及次数
+  mentions30Days    Int         @default(0)     // 过去 30 天的提及次数
+  averagePosition   Float?      // 实体在文章中的平均位置 (0-1，0=开头，1=结尾)
+  lastUpdated       DateTime    @updatedAt
+}
+
+// 实体共现关系表：记录哪些实体经常一起出现
+model EntityCooccurrence {
+  id                String      @id @default(cuid())
+  entity1Id         String
+  entity1           NamedEntity @relation("entity1", fields: [entity1Id], references: [id], onDelete: Cascade)
+  entity2Id         String
+  entity2           NamedEntity @relation("entity2", fields: [entity2Id], references: [id], onDelete: Cascade)
+
+  cooccurrenceCount Int         @default(0)     // 共现次数
+  lastDate          DateTime    @default(now()) // 最后共现日期
+
+  @@unique([entity1Id, entity2Id]) // 防止重复关系
+  @@index([entity1Id])
+  @@index([entity2Id])
+}
+
+// 在 Article 模型中添加关系（需要在 Article 模型中添加）
+// 更新 Article 模型时添加：
+// entityMentions    EntityMention[]

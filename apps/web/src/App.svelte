@@ -1,6 +1,10 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import type { StoryComparison, StoryDetail, StoryFacetDto, StoryListItem } from "@news/shared";
+  import type { StoryComparison, StoryDetail, StoryFacetDto, StoryListItem, LinkedEntity } from "@news/shared";
+  import EntityHighlighter from "./components/EntityHighlighter.svelte";
+  import EntityPopover from "./components/EntityPopover.svelte";
+  import EntityStats from "./components/EntityStats.svelte";
+  import { entityHighlight } from "./stores/useEntityHighlight";
 
   const API_BASE =
     typeof window !== "undefined"
@@ -22,6 +26,13 @@
     error: string;
   }
 
+  interface ArticleWithEntities {
+    articleId: string;
+    entities: LinkedEntity[];
+    entitiesLoaded: boolean;
+    entitiesLoading: boolean;
+  }
+
   let dates: string[] = [];
   let startDate = "";
   let preferredRegion = "";
@@ -34,6 +45,10 @@
   let activeDebugNodes: HTMLElement[] = [];
   let debugOverlay: HTMLDivElement | null = null;
   let debugRenderFrame: number | null = null;
+
+  // Entity highlighting state
+  let articleEntitiesMap: Map<string, ArticleWithEntities> = new Map();
+  let selectedEntityId: string | null = null;
 
   function setComponentLabelVisibility(active: boolean): void {
     if (typeof document === "undefined" || !import.meta.env.DEV) return;
@@ -331,6 +346,13 @@
           comparison,
         };
       });
+
+      // Load entities for all articles in the story
+      if (selectedStory?.articles) {
+        for (const article of selectedStory.articles) {
+          loadArticleEntities(article.id);
+        }
+      }
     } catch (value) {
       const message = value instanceof Error ? value.message : "Failed to load story";
       updateSection(date, (section) => ({
@@ -338,6 +360,63 @@
         error: message,
       }));
     }
+  }
+
+  async function loadArticleEntities(articleId: string): Promise<void> {
+    // Check if already loaded or loading
+    const existing = articleEntitiesMap.get(articleId);
+    if (existing?.entitiesLoaded || existing?.entitiesLoading) {
+      return;
+    }
+
+    // Mark as loading
+    articleEntitiesMap.set(articleId, {
+      articleId,
+      entities: [],
+      entitiesLoaded: false,
+      entitiesLoading: true,
+    });
+
+    try {
+      const response = await fetchJson<{
+        articleId: string;
+        entities: LinkedEntity[];
+      }>(`/api/articles/${articleId}/entities?limit=50`);
+
+      console.log("📦 Entities loaded for article:", { articleId, count: response.entities?.length ?? 0, entities: response.entities });
+
+      articleEntitiesMap.set(articleId, {
+        articleId,
+        entities: response.entities || [],
+        entitiesLoaded: true,
+        entitiesLoading: false,
+      });
+    } catch (error) {
+      // Silently fail - entities are optional UI enhancement
+      console.error("❌ Failed to load entities for article:", articleId, error);
+      articleEntitiesMap.set(articleId, {
+        articleId,
+        entities: [],
+        entitiesLoaded: false,
+        entitiesLoading: false,
+      });
+    }
+  }
+
+  function handleEntityClick(entity: LinkedEntity): void {
+    console.log("🔍 Entity clicked:", { entity });
+    selectedEntityId = entity.id;
+    entityHighlight.selectEntity(entity);
+    console.log("✓ Entity selected, selectedEntityId set to:", selectedEntityId);
+  }
+
+  function handleClosePopover(): void {
+    selectedEntityId = null;
+    entityHighlight.clearSelection();
+  }
+
+  function getEntitiesForArticle(articleId: string): LinkedEntity[] {
+    return articleEntitiesMap.get(articleId)?.entities || [];
   }
 
   async function handleCategoryChange(date: string, category: string): Promise<void> {
@@ -732,8 +811,22 @@
               </div>
             </div>
 
+            <!-- Entity Statistics Sidebar -->
+            {@const allArticleEntities = section.selectedStory.articles
+              .flatMap((article) => getEntitiesForArticle(article.id))}
+            {#if allArticleEntities.length > 0}
+              <div class="entity-stats-sidebar" use:debugComponent={componentLabel("EntityStats", shortId(section.selectedStory.id))}>
+                <EntityStats
+                  entities={allArticleEntities}
+                  {selectedEntityId}
+                  onEntitySelect={handleEntityClick}
+                />
+              </div>
+            {/if}
+
             <div class="article-grid" use:debugComponent={componentLabel("ArticleList", shortId(section.selectedStory.id))}>
               {#each section.selectedStory.articles as article}
+                {@const articleEntities = getEntitiesForArticle(article.id)}
                 <article
                   id={`article-${article.id}`}
                   class="article-entry"
@@ -761,7 +854,17 @@
                   </div>
                   <div class="article-card-body">
                     <div class="article-body">
-                      <p>{article.summary ?? "No summary available."}</p>
+                      {#if articleEntities.length > 0}
+                        <p class="article-summary-with-entities">
+                          <EntityHighlighter
+                            text={article.summary || article.title}
+                            entities={articleEntities}
+                            on:entity-click={(e) => handleEntityClick(e.detail.entity)}
+                          />
+                        </p>
+                      {:else}
+                        <p>{article.summary || article.title}</p>
+                      {/if}
                       {#if article.nearDuplicatePeers.length > 0}
                         <p class="signals">
                           Possible near-duplicate coverage:
@@ -808,6 +911,19 @@
     {/if}
   </div>
 </main>
+
+<!-- Entity Popover -->
+{#if selectedEntityId !== null}
+  {@const selectedEntity = Array.from(articleEntitiesMap.values())
+    .flatMap((a) => a.entities)
+    .find((e) => e.id === selectedEntityId)}
+  {#if selectedEntity}
+    <EntityPopover
+      entity={selectedEntity}
+      onClose={handleClosePopover}
+    />
+  {/if}
+{/if}
 
 <style>
   :global(:root) {
@@ -1262,6 +1378,23 @@
     display: grid;
     place-items: center;
     color: var(--muted);
+  }
+
+  /* Entity highlighting styles */
+  .article-summary-with-entities {
+    margin: 6px 0;
+    color: #34445c;
+    line-height: 1.52;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
+  .entity-stats-sidebar {
+    padding: 16px;
+    background: linear-gradient(135deg, rgba(245, 249, 255, 0.96), rgba(245, 249, 255, 0.92));
+    border: 1px solid rgba(37, 87, 167, 0.12);
+    border-radius: 12px;
+    margin-bottom: 10px;
   }
 
   :global(.debug-component-overlay) {

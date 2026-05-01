@@ -5,7 +5,11 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "check:entities": "tsx src/scripts/check-entities.ts",
     "compare:keywords": "tsx src/scripts/compare-keywords.ts",
+    "test:linker": "tsx src/scripts/test-linker.ts",
+    "test:enrichment-flow": "tsx src/scripts/test-enrichment-flow.ts",
+    "re-enrich:articles": "tsx src/scripts/re-enrich-articles.ts",
     "retry:openrouter-keywords": "tsx src/scripts/retry-openrouter-keywords.ts",
     "dev": "tsx watch src/index.ts",
     "enrich:status": "tsx src/scripts/enrich-status.ts",
@@ -27,21 +31,23 @@
     "verify:text-enrichment": "tsx src/scripts/verify-text-enrichment.ts"
   },
   "dependencies": {
-    "@mozilla/readability": "^0.6.0",
     "@fastify/cors": "^11.1.0",
+    "@mozilla/readability": "^0.6.0",
     "@news/db": "workspace:*",
     "@news/shared": "workspace:*",
     "@prisma/client": "^6.5.0",
+    "compromise": "^14.15.0",
     "dotenv": "^16.4.7",
     "fastify": "^5.2.1",
     "jsdom": "^26.1.0",
+    "natural": "^8.1.1",
     "playwright": "^1.54.2",
     "rss-parser": "^3.13.0",
     "zod": "^3.24.2"
   },
   "devDependencies": {
-    "@types/node": "^22.13.10",
     "@types/jsdom": "^21.1.7",
+    "@types/node": "^22.13.10",
     "tsx": "^4.19.3",
     "typescript": "^5.8.2",
     "vitest": "^3.0.8"

@@ -251,6 +251,43 @@ These items still need work before Milestone 1 feels truly closed:
 - [ ] Notebook export only uses Database
 - [ ] Deduplicate substantially identical article texts.
 - [ ] Improve URL resolution so intermediary `google.com` links are reliably resolved to publisher final URLs, while preserving original URL.
+- [ ] **Background Information Feature (Named Entity Recognition + Wikipedia Linking)**
+  - [ ] Database Schema:
+    - [ ] Add NamedEntity table (id, name, type, wikiId, wikipediaUrl, wikidataId, summary, imageUrl)
+    - [ ] Add EntityMention table (id, articleId, entityId, startOffset, endOffset, context, confidence)
+    - [ ] Add EntityStatistics table (id, entityId, totalMentions, uniqueArticles, mentions7Days, mentions30Days)
+    - [ ] Add EntityCooccurrence table (id, entity1Id, entity2Id, cooccurrenceCount, lastDate)
+  - [ ] NLP Services:
+    - [ ] Implement entity-recognition.ts using spaCy (en_core_web_md) for PERSON, GPE, ORG, EVENT extraction
+    - [ ] Implement entity-linker.ts for Wikipedia API integration with caching and disambiguation
+    - [ ] Implement entity-statistics.ts for calculating occurrence frequency, co-occurrence relationships, and time-series data
+    - [ ] Implement entity-query.ts for database query functions
+  - [ ] Data Processing:
+    - [ ] Create process-entities.ts script for batch processing existing articles
+    - [ ] Create update-entity-stats.ts script for periodic statistics refresh
+    - [ ] Add pnpm tasks: `entities:process`, `entities:update-stats`
+  - [ ] API Endpoints:
+    - [ ] GET /api/articles/:articleId/entities - Return entity list with mentions and Wikipedia summaries
+    - [ ] GET /api/entities/:entityId - Return detailed entity info with quantified statistics (trend data, co-occurrences)
+    - [ ] GET /api/entities/search?q=query - Search entities by name
+  - [ ] Frontend Components:
+    - [ ] Create ArticleContent.svelte - Display article text with highlighted entities
+    - [ ] Create EntityMention.svelte - Styled highlighted entity spans with tooltip
+    - [ ] Create EntityDetailModal.svelte - Modal showing entity details, statistics, trends, related entities
+    - [ ] Add entities.css - Styling for highlights, tooltips, modals
+    - [ ] Integrate chart.js/plotly.js for trend visualization
+    - [ ] Modify StoryDetail.svelte - Integrate entity features and statistics panel
+  - [ ] Background Jobs:
+    - [ ] Create entity-update.ts worker for scheduled entity processing
+    - [ ] Integrate with existing scheduler.ts
+  - [ ] Quantifiable Metrics:
+    - [ ] Total mentions per entity (global and per time period)
+    - [ ] Unique article count
+    - [ ] Co-occurrence frequency matrix
+    - [ ] 7-day and 30-day trend data
+    - [ ] Entity type distribution
+    - [ ] Average position in articles (beginning/middle/end)
+
 - [ ] Integrate more LLM infrastructure to run "tasks" against all articles in a cluster
   - [ ] Summarize the entire cluster into a neutral single summary.
   - [ ] Identify notable 'unique' aspects and notable ommissions against the cluster for each article. 
@@ -274,6 +311,12 @@ These items still need work before Milestone 1 feels truly closed:
 - OpenRouter failures must not block ingestion: retry with backoff (`5s`, `15s`, `60s`), then mark the record as `keywords_pending`.
 - Reprocessing job should target only records with missing OpenRouter outputs (`keywords_pending` or null keyword fields).
 - Notebook export must read from Postgres only; no direct export from raw Kagi snapshot folders.
+- **Background Information Feature Rules:**
+  - Wikipedia API failures must not block article ingestion: cache failures locally and retry with backoff
+  - Entity processing should run as an asynchronous background job, not blocking the main ingestion pipeline
+  - NER confidence scores below 0.6 should be marked as `pending_review` for manual verification
+  - Duplicate entities (same name, different cases) should be automatically merged
+  - Entity statistics should be updated daily, with trending data cached for 30 days
 
 ### Milestone 2 Acceptance Criteria
 
@@ -282,6 +325,159 @@ These items still need work before Milestone 1 feels truly closed:
 - Duplicate-text handling removes or links near-identical article bodies across different URLs/domains.
 - Cluster detail page renders summary, source/country/language counts, and task sections from stored DB results.
 - V2 cluster tasks run only on clusters selected by the existing `importanceScore` rule.
+- **Background Information Feature Acceptance Criteria:**
+  - All articles have named entities extracted with spaCy (PERSON, GPE, ORG, EVENT types)
+  - At least 80% of recognized entities are successfully linked to Wikipedia with cached summaries
+  - Entity detail API returns quantified statistics: total mentions, unique articles, 7/30-day trends, co-occurrence matrix
+  - Frontend displays highlighted entities in article text with clickable tooltips showing Wikipedia summary
+  - Entity modal shows at least 5 key metrics: mentions trend, co-occurrences, article type distribution, temporal trends (7/30-day), related entities
+  - Background entity update job runs successfully every 6 hours without blocking ingestion
+  - Performance: Entity processing adds <500ms per article (batched operations)
+
+## Milestone 2.5: Background Information Feature (Named Entity Recognition + Wikipedia Linking)
+
+### Architecture Overview
+
+**Data Pipeline:**
+1. Article text → spaCy NER → Named entity candidates (PERSON, GPE, ORG, EVENT)
+2. Entity candidates → Wikipedia/Wikidata API → Linked entities with metadata
+3. Entity links + article context → Database storage (NamedEntity, EntityMention)
+4. Batch statistics job → Calculate co-occurrences, trends, metrics → EntityStatistics table
+
+**API Layer:**
+- `/api/articles/:articleId/entities` - Return entity mentions in specific article
+- `/api/entities/:entityId` - Return detailed entity with quantified statistics
+- `/api/entities/search?q=query` - Search and filter entities
+
+**Frontend Layer:**
+- Article text → Highlight entity spans → Show tooltip on hover → Modal on click
+- Modal displays: Wikipedia summary, entity image, statistics (mentions, trends, co-occurrences)
+
+### Technology Stack
+
+**Backend:**
+- spaCy (en_core_web_md) for NER - fast, accurate, language-specific
+- Wikipedia API + Wikidata API for entity linking and metadata
+- PostgreSQL for entity and statistics storage
+- Node.js TypeScript for service layer
+
+**Frontend:**
+- Svelte components for highlighting and interactive displays
+- chart.js or plotly.js for trend visualization
+- Tailwind CSS for styling
+
+### Quantifiable Metrics (Non-LLM Based)
+
+1. **Frequency Metrics:**
+   - Total mentions (global)
+   - Mentions in past 7/30 days
+   - Unique articles containing entity
+   - Average mentions per article
+
+2. **Relationship Metrics:**
+   - Co-occurrence frequency matrix (which entities appear together)
+   - Top 10 related entities per entity
+   - Strength score (0-1) for each relationship
+
+3. **Distribution Metrics:**
+   - Entity type distribution (PERSON/GPE/ORG/EVENT)
+   - Article category distribution
+   - Language distribution
+   - Source/domain distribution
+
+4. **Temporal Metrics:**
+   - 7-day trend data (daily mention count)
+   - 30-day trend data (daily mention count)
+   - First mention date
+   - Last mention date
+   - Velocity (acceleration in mention rate)
+
+5. **Quality Metrics:**
+   - NER confidence scores (0-1)
+   - Wikipedia link status (linked/pending/failed)
+   - Entity disambiguation (if multiple Wikipedia entries exist)
+
+### Key Implementation Details
+
+**Entity Recognition (spaCy):**
+- Use en_core_web_md (medium) or en_core_web_lg (large for better accuracy)
+- Extract: PERSON, GPE (locations), ORG (organizations), EVENT (events)
+- Store confidence scores for each recognized entity
+- Mark low-confidence entities (<0.6) for manual review
+
+**Wikipedia Linking:**
+- Use MediaWiki Search API for initial lookup
+- Implement fuzzy matching for partial matches
+- Cache results in NamedEntity table to avoid redundant API calls
+- Handle disambiguation pages (if multiple Wikipedia entries)
+- Rate limit: 1 request per 100ms to respect Wikipedia API guidelines
+
+**Statistics Calculation:**
+- Run as background job every 6 hours
+- Batch process: Calculate co-occurrences, update trends, aggregate metrics
+- Use window functions (SQL) for efficient time-series calculations
+- Maintain 30-day rolling window of daily statistics
+
+**Database Indexing:**
+- EntityMention.entityId, EntityMention.articleId
+- EntityStatistics.entityId
+- NamedEntity.name (for search)
+- Create materialized views for frequently accessed aggregations
+
+### File Structure
+
+```
+Backend:
+apps/api/src/
+  ├── services/
+  │   ├── entity-recognition.ts      (NER using spaCy)
+  │   ├── entity-linker.ts           (Wikipedia API integration)
+  │   ├── entity-statistics.ts       (Statistics calculation)
+  │   └── entity-query.ts            (DB queries)
+  ├── scripts/
+  │   ├── process-entities.ts        (Batch process articles)
+  │   └── update-entity-stats.ts     (Periodic statistics update)
+  ├── workers/
+  │   └── entity-update.ts           (Background job)
+  └── routes/
+      └── api.ts                     (New entity endpoints)
+
+Frontend:
+apps/web/src/
+  ├── components/
+  │   ├── ArticleContent.svelte      (Text with highlighted entities)
+  │   ├── EntityMention.svelte       (Highlighted span)
+  │   └── EntityDetailModal.svelte   (Entity detail view)
+  └── styles/
+      └── entities.css               (Styling)
+
+Database:
+packages/db/prisma/
+  ├── schema.prisma                  (New entity tables)
+  └── migrations/
+      └── add-entities.sql           (Migration)
+```
+
+### Testing Strategy
+
+1. **Unit Tests:**
+   - entity-recognition: Test NER on sample texts
+   - entity-linker: Test Wikipedia lookup and caching
+   - entity-statistics: Test metric calculations
+
+2. **Integration Tests:**
+   - Full pipeline: Article → NER → Linking → Stats → DB → API
+   - Test on 100+ articles from different dates
+
+3. **Performance Tests:**
+   - Measure entity processing time per article
+   - Target: <500ms per article (batched)
+   - Test scalability with 1000+ articles
+
+4. **Quality Tests:**
+   - Compare NER results with manual annotations (sample 50 articles)
+   - Verify Wikipedia linking accuracy (at least 80% successfully linked)
+   - Check statistics correctness (sample calculations against raw data)
 
 ## Additional Product Requirements
 

@@ -90,3 +90,192 @@ export type StoryDetail = z.infer<typeof storyDetailSchema>;
 export type StoryComparison = z.infer<typeof storyComparisonSchema>;
 export type SourceProfileDto = z.infer<typeof sourceProfileSchema>;
 export type StoryFacetDto = z.infer<typeof storyFacetSchema>;
+
+// ============================================================
+// Entity API Schemas (Entity Recognition & Linking)
+// ============================================================
+
+const entityTypeEnum = z.enum(["PERSON", "GPE", "ORG", "EVENT"]);
+
+/**
+ * Query parameters for GET /api/articles/:articleId/entities
+ */
+export const articleEntitiesQuerySchema = z.object({
+  type: entityTypeEnum.optional(),
+  minConfidence: z.coerce
+    .number()
+    .min(0)
+    .max(1)
+    .optional()
+    .default(0),
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(100)
+    .optional()
+    .default(50),
+});
+
+/**
+ * Response for a single linked entity with Wikipedia information
+ */
+export const linkedEntitySchema = z.object({
+  id: z.string(),
+  entityText: z.string(),
+  entityType: entityTypeEnum,
+  confidence: z.number().min(0).max(1),
+  startOffset: z.number().int(),
+  endOffset: z.number().int(),
+  context: z.string(),
+  articleId: z.string(),
+  wikipediaUrl: z.string().url().optional(),
+  summary: z.string().optional(),
+  imageUrl: z.string().url().optional(),
+  linkedAt: z.date().optional(),
+  pageId: z.number().int().optional(),
+});
+
+/**
+ * Response for GET /api/articles/:articleId/entities
+ */
+export const articleEntitiesResponseSchema = z.object({
+  articleId: z.string(),
+  title: z.string(),
+  totalEntities: z.number().int(),
+  byType: z.object({
+    PERSON: z.number().int().optional(),
+    GPE: z.number().int().optional(),
+    ORG: z.number().int().optional(),
+    EVENT: z.number().int().optional(),
+  }),
+  entities: z.array(linkedEntitySchema),
+});
+
+/**
+ * Query parameters for GET /api/entities/:entityId
+ */
+export const entityIdParamsSchema = z.object({
+  entityId: z.string().min(1),
+});
+
+/**
+ * Statistics object in entity detail response
+ */
+export const entityStatisticsSchema = z.object({
+  totalMentions: z.number().int(),
+  articlesCount: z.number().int(),
+  mentions7Days: z.number().int(),
+  mentions30Days: z.number().int(),
+  topArticles: z.array(
+    z.object({
+      articleId: z.string(),
+      title: z.string(),
+      date: isoDateSchema,
+      url: z.string().url(),
+      domain: z.string(),
+      mentions: z.number().int(),
+    })
+  ),
+  topDomains: z.array(
+    z.object({
+      domain: z.string(),
+      mentions: z.number().int(),
+    })
+  ),
+  cooccurrences: z.array(
+    z.object({
+      entityId: z.string(),
+      name: z.string(),
+      type: entityTypeEnum,
+      cooccurrenceCount: z.number().int(),
+    })
+  ),
+  trend: z.array(
+    z.object({
+      date: isoDateSchema,
+      count: z.number().int(),
+    })
+  ),
+});
+
+/**
+ * Response for GET /api/entities/:entityId
+ */
+export const entityDetailResponseSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  type: entityTypeEnum,
+  wikipediaUrl: z.string().url().optional(),
+  summary: z.string().optional(),
+  imageUrl: z.string().url().optional(),
+  wikidataId: z.string().optional(),
+  statistics: entityStatisticsSchema,
+});
+
+/**
+ * Query parameters for GET /api/entities/search
+ */
+export const searchEntitiesQuerySchema = z.object({
+  q: z.string().min(1).max(100),
+  type: entityTypeEnum.optional(),
+  limit: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(50)
+    .optional()
+    .default(10),
+  offset: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .default(0),
+});
+
+/**
+ * Single search result for entity search response
+ */
+export const entitySearchResultSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  type: entityTypeEnum,
+  wikipediaUrl: z.string().url().optional(),
+  mentionsCount: z.number().int(),
+  articlesCount: z.number().int(),
+  relevanceScore: z.number().min(0).max(1),
+});
+
+/**
+ * Response for GET /api/entities/search
+ */
+export const searchEntitiesResponseSchema = z.object({
+  query: z.string(),
+  totalResults: z.number().int(),
+  results: z.array(entitySearchResultSchema),
+});
+
+/**
+ * Error response
+ */
+export const errorResponseSchema = z.object({
+  message: z.string(),
+  statusCode: z.number().int().optional(),
+});
+
+// Export TypeScript types from schemas
+export type ArticleEntitiesQuery = z.infer<typeof articleEntitiesQuerySchema>;
+export type LinkedEntity = z.infer<typeof linkedEntitySchema>;
+export type ArticleEntitiesResponse = z.infer<
+  typeof articleEntitiesResponseSchema
+>;
+export type EntityIdParams = z.infer<typeof entityIdParamsSchema>;
+export type EntityStatistics = z.infer<typeof entityStatisticsSchema>;
+export type EntityDetailResponse = z.infer<typeof entityDetailResponseSchema>;
+export type SearchEntitiesQuery = z.infer<typeof searchEntitiesQuerySchema>;
+export type EntitySearchResult = z.infer<typeof entitySearchResultSchema>;
+export type SearchEntitiesResponse = z.infer<
+  typeof searchEntitiesResponseSchema
+>;
+export type ErrorResponse = z.infer<typeof errorResponseSchema>;
